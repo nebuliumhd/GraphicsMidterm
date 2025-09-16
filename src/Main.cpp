@@ -4,7 +4,7 @@
 #include <vector>
 #include <array>
 
-#include <webgpu/webgpu.h>
+#include "Main.hpp"
 
 WGPUInstance g_instance;
 WGPUAdapter g_adapter;
@@ -261,6 +261,13 @@ void Init()
     queueCBInfo.userdata2 = nullptr;
 
     wgpuQueueOnSubmittedWorkDone2(g_queue, queueCBInfo);
+
+    // GLFW init
+
+    if (!glfwInit()) {
+        std::cerr << "Could not initialize GLFW!\n";
+        return;
+    }
 }
 
 void DispatchCommands()
@@ -290,6 +297,8 @@ void Shutdown()
     wgpuDeviceRelease(g_device);
     wgpuAdapterRelease(g_adapter);
     wgpuInstanceRelease(g_instance);
+
+    glfwTerminate();
 }
 
 int main()
