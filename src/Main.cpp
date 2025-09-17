@@ -8,6 +8,26 @@
 #include <glfw3webgpu.h>
 #include "Main.hpp"
 
+const char* shaderCode = R"(
+    @vertex
+    fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4f {
+        var p = vec2f(0.0, 0.0);
+        if (in_vertex_index == 0u) {
+            p = vec2f(-0.5, -0.5);
+        } else if (in_vertex_index == 1u) {
+            p = vec2f(0.5, -0.5);
+        } else {
+            p = vec2f(0.0, 0.5);
+        }
+        return vec4f(p, 0.0, 1.0);
+    }
+
+    @fragment
+    fn fs_main() -> @location(0) vec4f {
+        return vec4f(0.0, 0.4, 1.0, 1.0);
+    }
+)";
+
 WGPUAdapter Application::requestAdapterSync(WGPUInstance instance, const WGPURequestAdapterOptions* options)
 {
     // Use this as a Future<WGPUAdapter> so the asynchronous callback gets the adapter within the struct
@@ -287,12 +307,15 @@ bool Application::Initialize()
     
     WGPUSurfaceCapabilities surfaceCap = {};
     wgpuSurfaceGetCapabilities(m_surface, m_adapter, &surfaceCap);
-    if (!surfaceCap.formats) {
+    if (!surfaceCap.formats || surfaceCap.formatCount == 0) {
         std::cerr << "There are no available formats\n";
         return false;
     }
 
-    surfaceConfig.format = surfaceCap.formats[0];
+    m_surfaceFormat = surfaceCap.formats[0];
+    std::cout << "Using surface format: " << m_surfaceFormat << " (0x" << std::hex << m_surfaceFormat << std::dec << ")\n";
+
+    surfaceConfig.format = m_surfaceFormat;
     surfaceConfig.usage = WGPUTextureUsage_RenderAttachment;
     surfaceConfig.viewFormatCount = 0;
     surfaceConfig.viewFormats = nullptr;
@@ -302,7 +325,16 @@ bool Application::Initialize()
     surfaceConfig.presentMode = WGPUPresentMode_Fifo;
 
     wgpuSurfaceConfigure(m_surface, &surfaceConfig);
-    
+
+    // Render pipeline
+    std::cout << "Creating render pipeline...\n";
+    initializePipeline();
+
+    if (!m_pipeline) {
+        std::cerr << "Error: Failed to create a render pipeline!\n";
+        return false;
+    }
+
     return true;
 }
 
@@ -342,7 +374,10 @@ void Application::MainLoop()
     WGPUCommandEncoder cmdEncoder = wgpuDeviceCreateCommandEncoder(m_device, &cmdEncoderDesc);
     WGPURenderPassEncoder renderPassEncoder = wgpuCommandEncoderBeginRenderPass(cmdEncoder, &renderPassDesc);
 
-    // Issue draw calls here before releasing the render pass encoders
+    // Issue draw calls here
+    wgpuRenderPassEncoderSetPipeline(renderPassEncoder, m_pipeline);
+    // Draw 1 triangle
+    wgpuRenderPassEncoderDraw(renderPassEncoder, 3, 1, 0, 0);
     
     wgpuRenderPassEncoderEnd(renderPassEncoder);
     wgpuRenderPassEncoderRelease(renderPassEncoder);
@@ -351,7 +386,7 @@ void Application::MainLoop()
     cmdBuffDesc.nextInChain = nullptr;
     cmdBuffDesc.label = "Main command buffer";
     WGPUCommandBuffer cmdBuff = wgpuCommandEncoderFinish(cmdEncoder, &cmdBuffDesc);
-    wgpuRenderPassEncoderRelease(renderPassEncoder);
+    wgpuCommandEncoderRelease(cmdEncoder);
 
     // 4. Submit commands
     m_gpuIdle = false;
@@ -380,7 +415,123 @@ void Application::MainLoop()
     // 7. Release surface after render
     wgpuTextureRelease(surfaceTexture.texture);
     wgpuTextureViewRelease(targetView);
+}
 
+void Application::initializePipeline()
+{
+    std::cout << "Device: " << m_device << "\n";
+    std::cout << "Surface format: " << m_surfaceFormat << " (0x" << std::hex << m_surfaceFormat << std::dec << ")\n";
+
+    // Create shader
+    WGPUShaderModuleWGSLDescriptor shaderCodeDesc = {};
+    shaderCodeDesc.chain.next = nullptr;
+    shaderCodeDesc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
+    shaderCodeDesc.code = shaderCode;
+
+    WGPUShaderModuleDescriptor shaderDesc = {};
+    shaderDesc.nextInChain = &shaderCodeDesc.chain;
+    shaderDesc.label = "Main shader module";
+
+    std::cout << "Creating shader module...\n";
+    WGPUShaderModule shaderModule = wgpuDeviceCreateShaderModule(m_device, &shaderDesc);
+    if (!shaderModule) {
+        std::cerr << "Error: Failed to create shader module!\n";
+        return;
+    }
+    std::cout << "Shader module created: " << shaderModule << "\n";
+
+    WGPUPipelineLayoutDescriptor layoutDesc = {};
+    layoutDesc.nextInChain = nullptr;
+    layoutDesc.label = "Main pipeline layout";
+    layoutDesc.bindGroupLayoutCount = 0;
+    layoutDesc.bindGroupLayouts = nullptr;
+    
+    std::cout << "Creating pipeline layout...\n";
+    WGPUPipelineLayout pipelineLayout = wgpuDeviceCreatePipelineLayout(m_device, &layoutDesc);
+    if (!pipelineLayout) {
+        std::cerr << "Error: Failed to create pipeline layout!\n";
+        wgpuShaderModuleRelease(shaderModule);
+        return;
+    }
+    std::cout << "Pipeline layout created: " << pipelineLayout << "\n";
+
+
+    // Layout
+    WGPURenderPipelineDescriptor pipelineDesc = {};
+    pipelineDesc.nextInChain = nullptr;
+    pipelineDesc.label = "Main pipeline";
+    pipelineDesc.layout = pipelineLayout;
+
+    // No position buffer needed for triangle
+    pipelineDesc.vertex.nextInChain = nullptr;
+    pipelineDesc.vertex.module = shaderModule;
+    pipelineDesc.vertex.entryPoint = "vs_main";
+    pipelineDesc.vertex.constantCount = 0;
+    pipelineDesc.vertex.constants = nullptr;
+    pipelineDesc.vertex.bufferCount = 0;
+    pipelineDesc.vertex.buffers = nullptr;
+
+    // Primitive
+    pipelineDesc.primitive.nextInChain = nullptr;
+    pipelineDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList; // Each 3 points is a triangle (GL_TRIANGLE)
+    pipelineDesc.primitive.stripIndexFormat = WGPUIndexFormat_Undefined; // Sequential connections
+    pipelineDesc.primitive.frontFace = WGPUFrontFace_CCW; // The face oritentation is enumerated in CCW order
+    pipelineDesc.primitive.cullMode = WGPUCullMode_None; // No optimizations yet
+
+    // Depth stencil (ASSUMED DEFAULTS)
+    pipelineDesc.depthStencil = nullptr;
+    
+    // Multisampling
+    pipelineDesc.multisample.nextInChain = nullptr;
+    pipelineDesc.multisample.count = 1; // One subelement (No AA)
+    pipelineDesc.multisample.mask = ~0u; // All bits on
+    pipelineDesc.multisample.alphaToCoverageEnabled = false;
+
+    // Fragment
+    WGPUBlendState blendState = {};
+    blendState.color.operation = WGPUBlendOperation_Add;
+    blendState.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    blendState.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blendState.alpha.operation = WGPUBlendOperation_Add;
+    blendState.alpha.srcFactor = WGPUBlendFactor_Zero;
+    blendState.alpha.dstFactor = WGPUBlendFactor_One;
+
+    WGPUColorTargetState colorTarget = {};
+    colorTarget.nextInChain = nullptr;
+    colorTarget.format = m_surfaceFormat;
+    colorTarget.blend = &blendState;
+    colorTarget.writeMask = WGPUColorWriteMask_All; // Only write to the same number of color channels
+
+    WGPUFragmentState fragState = {};
+    fragState.nextInChain = nullptr;
+    fragState.module = shaderModule;
+    fragState.entryPoint = "fs_main";
+    fragState.constantCount = 0;
+    fragState.constants = nullptr;
+    fragState.targetCount = 1;
+    fragState.targets = &colorTarget;
+
+    pipelineDesc.fragment = &fragState;
+
+    // Create the render pipeline
+    std::cout << "Creating render pipeline...\n";
+    std::cout << "  - Vertex entry point: " << pipelineDesc.vertex.entryPoint << "\n";
+    std::cout << "  - Fragment entry point: " << fragState.entryPoint << "\n";
+    std::cout << "  - Color target format: " << colorTarget.format << "\n";
+
+    // Create the pipeline
+    m_pipeline = wgpuDeviceCreateRenderPipeline(m_device, &pipelineDesc);
+
+    // Discard after binding to pipeline
+    wgpuPipelineLayoutRelease(pipelineLayout);
+    wgpuShaderModuleRelease(shaderModule);
+
+    if (!m_pipeline) {
+        std::cerr << "ERROR: wgpuDeviceCreateRenderPipeline returned nullptr!\n";
+        std::cerr << "Check device error callback for more details.\n";
+    } else {
+        std::cout << "SUCCESS: Render pipeline created: " << m_pipeline << "\n";
+    }
 }
 
 void Application::Terminate()
@@ -402,6 +553,7 @@ void Application::Terminate()
 
     std::cout << "GPU work completed, cleaning up resources...\n";
 
+    wgpuRenderPipelineRelease(m_pipeline);
     wgpuSurfaceUnconfigure(m_surface);
     wgpuSurfaceRelease(m_surface);
     wgpuQueueRelease(m_queue);

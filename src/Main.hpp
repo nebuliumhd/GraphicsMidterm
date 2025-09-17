@@ -20,10 +20,13 @@ private:
 	WGPUDevice m_device = nullptr;
 	WGPUQueue m_queue = nullptr;
 	WGPUSurface m_surface = nullptr;
+	WGPURenderPipeline m_pipeline = nullptr;
+	WGPUTextureFormat m_surfaceFormat = WGPUTextureFormat_Undefined;
 
 	bool m_gpuIdle = false;
 
 	std::pair<WGPUSurfaceTexture, WGPUTextureView> getNextSurfaceViewData();
 	WGPUAdapter requestAdapterSync(WGPUInstance instance, const WGPURequestAdapterOptions* options);
 	WGPUDevice requestDeviceSync(WGPUAdapter adapter, const WGPUDeviceDescriptor* descriptor);
+	void initializePipeline();
 };
