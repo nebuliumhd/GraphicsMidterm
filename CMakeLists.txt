@@ -39,6 +39,7 @@ set(DAWN_ENABLE_WGPU OFF CACHE BOOL "Disable WebGPU backend" FORCE)
 set(DAWN_ENABLE_VULKAN ON CACHE BOOL "Enable Vulkan backend" FORCE)
 set(Dawn_USE_INTERNAL_GLFW OFF CACHE BOOL "Disable internal GLFW" FORCE)
 add_subdirectory(vendor/dawn)
+add_subdirectory(vendor/glfw3webgpu)
 
 target_include_directories(App
     PRIVATE
@@ -49,6 +50,7 @@ target_link_libraries(App
     PRIVATE
         webgpu
         glfw
+        glfw3webgpu
 )
 
 target_copy_webgpu_binaries(App)

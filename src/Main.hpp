@@ -1,5 +1,8 @@
 #pragma once
 
+#include <utility>
+
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <webgpu/webgpu.h>
 
@@ -11,5 +14,16 @@ public:
 	void MainLoop();
 	bool IsRunning();
 private:
-	GLFWwindow* m_window = nullptr;
+	GLFWwindow* m_glfwWindow = nullptr;
+	WGPUInstance m_instance = nullptr;
+	WGPUAdapter m_adapter = nullptr;
+	WGPUDevice m_device = nullptr;
+	WGPUQueue m_queue = nullptr;
+	WGPUSurface m_surface = nullptr;
+
+	bool m_gpuIdle = false;
+
+	std::pair<WGPUSurfaceTexture, WGPUTextureView> getNextSurfaceViewData();
+	WGPUAdapter requestAdapterSync(WGPUInstance instance, const WGPURequestAdapterOptions* options);
+	WGPUDevice requestDeviceSync(WGPUAdapter adapter, const WGPUDeviceDescriptor* descriptor);
 };
