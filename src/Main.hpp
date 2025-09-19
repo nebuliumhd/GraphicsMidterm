@@ -22,11 +22,18 @@ private:
 	WGPUSurface m_surface = nullptr;
 	WGPURenderPipeline m_pipeline = nullptr;
 	WGPUTextureFormat m_surfaceFormat = WGPUTextureFormat_Undefined;
+	WGPUBuffer m_buffer1 = nullptr, m_buffer2 = nullptr;
+	WGPUBuffer m_vertexBuffer = nullptr;
 
 	bool m_gpuIdle = false;
+	uint32_t m_vertexCount = 0;
 
 	std::pair<WGPUSurfaceTexture, WGPUTextureView> getNextSurfaceViewData();
 	WGPUAdapter requestAdapterSync(WGPUInstance instance, const WGPURequestAdapterOptions* options);
 	WGPUDevice requestDeviceSync(WGPUAdapter adapter, const WGPUDeviceDescriptor* descriptor);
+	WGPURequiredLimits getRequiredLimits(WGPUAdapter adapter) const;
+	void setDefault(WGPULimits& limits) const;
 	void initializePipeline();
+	void foobarBuffers();
+	void intializeBuffers();
 };

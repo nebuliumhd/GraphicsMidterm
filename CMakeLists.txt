@@ -40,6 +40,7 @@ set(DAWN_ENABLE_VULKAN ON CACHE BOOL "Enable Vulkan backend" FORCE)
 set(Dawn_USE_INTERNAL_GLFW OFF CACHE BOOL "Disable internal GLFW" FORCE)
 add_subdirectory(vendor/dawn)
 add_subdirectory(vendor/glfw3webgpu)
+add_subdirectory(vendor/spdlog)
 
 target_include_directories(App
     PRIVATE
@@ -48,9 +49,10 @@ target_include_directories(App
 
 target_link_libraries(App
     PRIVATE
-        webgpu
         glfw
         glfw3webgpu
+        webgpu
+        spdlog
 )
 
 target_copy_webgpu_binaries(App)
