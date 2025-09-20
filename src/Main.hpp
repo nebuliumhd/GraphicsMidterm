@@ -25,6 +25,10 @@ private:
 	WGPUTextureFormat m_surfaceFormat = WGPUTextureFormat_Undefined;
 	WGPUBuffer m_buffer1 = nullptr, m_buffer2 = nullptr;
 	WGPUBuffer m_pointBuffer = nullptr, m_indexBuffer = nullptr;
+	WGPUBuffer m_uniformBuffer = nullptr;
+	WGPUPipelineLayout m_layout = nullptr;
+	WGPUBindGroup m_bindGroup = nullptr;
+	WGPUBindGroupLayout m_bindGroupLayout = nullptr;
 
 	bool m_gpuIdle = false;
 	// uint32_t m_vertexCount = 0;
@@ -35,7 +39,9 @@ private:
 	WGPUDevice requestDeviceSync(WGPUAdapter adapter, const WGPUDeviceDescriptor* descriptor);
 	WGPURequiredLimits getRequiredLimits(WGPUAdapter adapter) const;
 	void setDefault(WGPULimits& limits) const;
+	void setDefault(WGPUBindGroupLayoutEntry& bindingLayout) const;
 	void initializePipeline();
 	void foobarBuffers();
 	void intializeBuffers();
+	void initializeBindGroups();
 };

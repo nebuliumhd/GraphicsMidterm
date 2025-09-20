@@ -4,6 +4,8 @@ struct VertexInput {
 	@location(1) color: vec3f,
 };
 
+@group(0) @binding(0) var<uniform> u_time: f32;
+
 // Cannot directly send struct to fragment through C++, must return it from vertex shader
 struct VertexOutput {
 	@builtin(position) position: vec4f, // @builtin(position) is required by the rasterizer
@@ -14,7 +16,10 @@ struct VertexOutput {
 fn vs_main(in: VertexInput) -> VertexOutput {
 	var out: VertexOutput;
 	let ratio = 1920.0 / 1080.0; // Target aspect ratio of surface
-	let offset = vec2f(-0.6875, -0.463); // The offset that we want to apply
+	
+	var offset = vec2f(-0.6875, -0.463); // The offset that we want to apply
+	offset += 0.3 * vec2f(cos(u_time), sin(u_time));
+	
 	out.position = vec4f(in.position.x + offset.x, (in.position.y + offset.y) * ratio, 0.0, 1.0); // Same as before
 	out.color = in.color; // Forward to FS
 	return out;

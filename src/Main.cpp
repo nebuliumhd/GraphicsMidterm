@@ -89,6 +89,8 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 	WGPURequiredLimits requiredLimits = {};
 	setDefault(requiredLimits.limits);
 
+	// Vertex buffers
+
 	// Two vertex attributes (position and color)
 	requiredLimits.limits.maxVertexAttributes = 2;
 	// One vertex buffer
@@ -99,6 +101,15 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 	requiredLimits.limits.maxBufferSize = 2 * 3 * 5 * sizeof(float);
 	// Maximum stride between consecutive vertices in a vertex buffer
 	requiredLimits.limits.maxVertexBufferArrayStride = 5 * sizeof(float);
+
+	// Uniforms
+
+	// For texture uniforms
+	requiredLimits.limits.maxBindGroups = 1;
+	// Use at most 1 uniform buffer per stage
+	requiredLimits.limits.maxUniformBuffersPerShaderStage = 1;
+	// Uniform structs have a size of a maximum 16 floats (way more than needed)
+	requiredLimits.limits.maxUniformBufferBindingSize = 16 * sizeof(float);
 
 	// IMPORTANT!!! MUST SET THESE TO AN INITIALIZED VALUE
 
@@ -142,6 +153,33 @@ void Application::setDefault(WGPULimits& limits) const
 	limits.maxComputeWorkgroupSizeY = WGPU_LIMIT_U32_UNDEFINED;
 	limits.maxComputeWorkgroupSizeZ = WGPU_LIMIT_U32_UNDEFINED;
 	limits.maxComputeWorkgroupsPerDimension = WGPU_LIMIT_U32_UNDEFINED;
+}
+
+void Application::setDefault(WGPUBindGroupLayoutEntry& bindingLayout) const
+{
+	bindingLayout.nextInChain = nullptr;
+	
+	// Need to be changed by the function that calls this
+	bindingLayout.binding = 0;
+	bindingLayout.visibility = WGPUShaderStage_None;
+
+	bindingLayout.buffer.nextInChain = nullptr;
+	bindingLayout.buffer.type = WGPUBufferBindingType_Undefined;
+	bindingLayout.buffer.hasDynamicOffset = false;
+	bindingLayout.buffer.minBindingSize = 0;
+
+	bindingLayout.sampler.nextInChain = nullptr;
+	bindingLayout.sampler.type = WGPUSamplerBindingType_Undefined;
+
+	bindingLayout.texture.nextInChain = nullptr;
+	bindingLayout.texture.sampleType = WGPUTextureSampleType_Undefined;
+	bindingLayout.texture.viewDimension = WGPUTextureViewDimension_Undefined;
+	bindingLayout.texture.multisampled = false;
+
+	bindingLayout.storageTexture.nextInChain = nullptr;
+	bindingLayout.storageTexture.access = WGPUStorageTextureAccess_Undefined;
+	bindingLayout.storageTexture.format = WGPUTextureFormat_Undefined;
+	bindingLayout.storageTexture.viewDimension = WGPUTextureViewDimension_Undefined;
 }
 
 void DisplayAdapterInfo(WGPUAdapter adapter)
@@ -386,6 +424,9 @@ bool Application::Initialize()
 	wgpuSurfaceConfigure(m_surface, &surfaceConfig);
 
 	// Render pipeline
+	// DO THESE BEFORE CREATING THE PIPELINE
+	intializeBuffers();
+	initializeBindGroups(); // The bind groups DEPEND on the buffers
 
 	SPDLOG_INFO("Creating render pipeline...");
 	initializePipeline();
@@ -395,10 +436,59 @@ bool Application::Initialize()
 		exit(1);
 	}
 
-	// foobarBuffers();
-	intializeBuffers();
-
 	return true;
+}
+
+void Application::initializeBindGroups()
+{
+	// 1. Create bind group layout entry
+	WGPUBindGroupLayoutEntry bindingLayout = {};
+	setDefault(bindingLayout);
+	bindingLayout.binding = 0;
+	bindingLayout.visibility = WGPUShaderStage_Vertex;
+	bindingLayout.buffer.type = WGPUBufferBindingType_Uniform;
+	bindingLayout.buffer.minBindingSize = 4 * sizeof(float); // Need multiple of 16 for uniform buffer
+
+	// 2. Create bind group layout (blueprint)
+	WGPUBindGroupLayoutDescriptor bindGroupLayoutDesc = {};
+	bindGroupLayoutDesc.nextInChain = nullptr;
+	bindGroupLayoutDesc.label = "My main binding group layout";
+	bindGroupLayoutDesc.entryCount = 1; // Just the u_time for now
+	bindGroupLayoutDesc.entries = &bindingLayout;
+	m_bindGroupLayout = wgpuDeviceCreateBindGroupLayout(m_device, &bindGroupLayoutDesc);
+
+	// 3. Create bind group entry (actual resource data)
+	WGPUBindGroupEntry binding = {};
+	binding.nextInChain = nullptr;
+	binding.binding = 0; // Index of binding
+	binding.buffer = m_uniformBuffer;
+	binding.offset = 0;
+	binding.size = 4 * sizeof(float);
+	// Don't use other two for now
+
+	// 4. Create the actual bind group
+	WGPUBindGroupDescriptor bindGroupDesc = {};
+	bindGroupDesc.nextInChain = nullptr;
+	bindGroupDesc.label = "My bind group descriptor";
+	bindGroupDesc.layout = m_bindGroupLayout;
+	bindGroupDesc.entryCount = 1;
+	bindGroupDesc.entries = &binding;
+	m_bindGroup = wgpuDeviceCreateBindGroup(m_device, &bindGroupDesc);
+
+	// 5. Pipeline layout
+	WGPUPipelineLayoutDescriptor layoutDesc = {};
+	layoutDesc.nextInChain = nullptr;
+	layoutDesc.label = "Main pipeline layout";
+	layoutDesc.bindGroupLayoutCount = 1;
+	layoutDesc.bindGroupLayouts = &m_bindGroupLayout;
+
+	SPDLOG_INFO("Creating pipeline layout...");
+	m_layout = wgpuDeviceCreatePipelineLayout(m_device, &layoutDesc);
+	if (!m_layout) {
+		SPDLOG_ERROR("Failed to create pipeline layout!");
+		exit(1);
+	}
+	SPDLOG_INFO("Pipeline layout created");
 }
 
 void Application::initializePipeline()
@@ -411,26 +501,12 @@ void Application::initializePipeline()
 	}
 	SPDLOG_INFO("Shader module created.");
 
-	WGPUPipelineLayoutDescriptor layoutDesc = {};
-	layoutDesc.nextInChain = nullptr;
-	layoutDesc.label = "Main pipeline layout";
-	layoutDesc.bindGroupLayoutCount = 0;
-	layoutDesc.bindGroupLayouts = nullptr;
-
-	SPDLOG_INFO("Creating pipeline layout...");
-	WGPUPipelineLayout pipelineLayout = wgpuDeviceCreatePipelineLayout(m_device, &layoutDesc);
-	if (!pipelineLayout) {
-		SPDLOG_ERROR("Failed to create pipeline layout!");
-		wgpuShaderModuleRelease(shaderModule);
-		exit(1);
-	}
-	SPDLOG_INFO("Pipeline layout created");
-
-	// Layout
 	WGPURenderPipelineDescriptor pipelineDesc = {};
 	pipelineDesc.nextInChain = nullptr;
 	pipelineDesc.label = "Main pipeline";
-	pipelineDesc.layout = pipelineLayout;
+	
+	// Layout (NEEDS TO HAVE BINDGROUPS INITIALIZED FIRST!!!)
+	pipelineDesc.layout = m_layout;
 
 	// Vertex buffer
 	std::vector<WGPUVertexAttribute> vertexAttrib(2);
@@ -505,7 +581,6 @@ void Application::initializePipeline()
 	m_pipeline = wgpuDeviceCreateRenderPipeline(m_device, &pipelineDesc);
 
 	// Discard after binding to pipeline
-	wgpuPipelineLayoutRelease(pipelineLayout);
 	wgpuShaderModuleRelease(shaderModule);
 
 	if (!m_pipeline) {
@@ -598,6 +673,7 @@ void Application::intializeBuffers()
 	// m_vertexCount = static_cast<uint32_t>(pointData.size() / 5); // 5 is the number of COLLECTIVE vertex attributes
 	m_indexCount = static_cast<uint32_t>(indexData.size());
 
+	// Vertex buffer
 	WGPUBufferDescriptor bufferDesc = {};
 	bufferDesc.nextInChain = nullptr;
 	bufferDesc.label = "My main vertex buffer";
@@ -607,6 +683,7 @@ void Application::intializeBuffers()
 	m_pointBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
 	wgpuQueueWriteBuffer(m_queue, m_pointBuffer, 0, pointData.data(), bufferDesc.size);
 
+	// Index buffer
 	bufferDesc.label = "My main index buffer";
 	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Index;
 	bufferDesc.size = indexData.size() * sizeof(uint16_t);
@@ -614,6 +691,14 @@ void Application::intializeBuffers()
 	indexData.resize((indexData.size() + 1) & ~1); // Round up to the next multiple of 2
 	m_indexBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
 	wgpuQueueWriteBuffer(m_queue, m_indexBuffer, 0, indexData.data(), bufferDesc.size);
+
+	// Uniform buffer
+	bufferDesc.label = "My main uniform buffer";
+	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
+	bufferDesc.size = 4 * sizeof(float); // IMPORTANT! MAKE SURE WE ARE USING MULTIPLES OF 16
+	m_uniformBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
+	float currentTime = 1.0f;
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0, &currentTime, bufferDesc.size);
 }
 
 void Application::MainLoop()
@@ -621,6 +706,10 @@ void Application::MainLoop()
 	glfwPollEvents();
 	wgpuInstanceProcessEvents(m_instance);
 	wgpuDeviceTick(m_device);
+
+	// 0. Update buffers
+	float t = static_cast<float>(glfwGetTime());
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0, &t, sizeof(float));
 
 	// 1. Get textures from our surface
 	auto [surfaceTexture, targetView] = getNextSurfaceViewData();
@@ -658,6 +747,10 @@ void Application::MainLoop()
 	// Set vertex buffer while encoding the render pass
 	wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder, 0, m_pointBuffer, 0, wgpuBufferGetSize(m_pointBuffer));
 	wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder, m_indexBuffer, WGPUIndexFormat_Uint16, 0, wgpuBufferGetSize(m_indexBuffer));
+
+	// Set binding group here!
+	wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 0, nullptr);
+
 	wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
 
 	wgpuRenderPassEncoderEnd(renderPassEncoder);
@@ -717,11 +810,19 @@ void Application::Terminate()
 
 	SPDLOG_INFO("GPU work completed, cleaning up resources...");
 
+	wgpuRenderPipelineRelease(m_pipeline);
+
+	wgpuPipelineLayoutRelease(m_layout);
+	wgpuBindGroupRelease(m_bindGroup);
+	wgpuBindGroupLayoutRelease(m_bindGroupLayout);
+
+	wgpuBufferRelease(m_uniformBuffer);
 	wgpuBufferRelease(m_pointBuffer);
 	wgpuBufferRelease(m_indexBuffer);
+
 	// wgpuBufferRelease(m_buffer2);
 	// wgpuBufferRelease(m_buffer1);
-	wgpuRenderPipelineRelease(m_pipeline);
+	
 	wgpuSurfaceUnconfigure(m_surface);
 	wgpuSurfaceRelease(m_surface);
 	wgpuQueueRelease(m_queue);
