@@ -15,6 +15,13 @@
 #error "A RESOURCE_DIR must be defined to compile the project!"
 #endif
 
+// Takes value and rounds it up to the next multiple of step
+uint32_t Application::ceilToNextMultiple(uint32_t value, uint32_t step)
+{
+	uint32_t divideAndCeil = value / step + (value % step == 0 ? 0 : 1);
+	return step * divideAndCeil;
+}
+
 WGPUAdapter Application::requestAdapterSync(WGPUInstance instance, const WGPURequestAdapterOptions* options)
 {
 	// Use this as a Future<WGPUAdapter> so the asynchronous callback gets the adapter within the struct
@@ -110,6 +117,8 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 	requiredLimits.limits.maxUniformBuffersPerShaderStage = 1;
 	// Uniform structs have a size of a maximum 16 floats (way more than needed)
 	requiredLimits.limits.maxUniformBufferBindingSize = 16 * sizeof(float);
+	// Extra limit requirement
+	requiredLimits.limits.maxDynamicUniformBuffersPerPipelineLayout = 1;
 
 	// IMPORTANT!!! MUST SET THESE TO AN INITIALIZED VALUE
 
@@ -165,7 +174,7 @@ void Application::setDefault(WGPUBindGroupLayoutEntry& bindingLayout) const
 
 	bindingLayout.buffer.nextInChain = nullptr;
 	bindingLayout.buffer.type = WGPUBufferBindingType_Undefined;
-	bindingLayout.buffer.hasDynamicOffset = false;
+	bindingLayout.buffer.hasDynamicOffset = true;
 	bindingLayout.buffer.minBindingSize = 0;
 
 	bindingLayout.sampler.nextInChain = nullptr;
@@ -182,7 +191,7 @@ void Application::setDefault(WGPUBindGroupLayoutEntry& bindingLayout) const
 	bindingLayout.storageTexture.viewDimension = WGPUTextureViewDimension_Undefined;
 }
 
-void DisplayAdapterInfo(WGPUAdapter adapter)
+void Application::displayAdapterInfo(WGPUAdapter adapter)
 {
 	// Limits
 
@@ -238,7 +247,7 @@ void DisplayAdapterInfo(WGPUAdapter adapter)
 	SPDLOG_INFO("{}", ss.str());
 }
 
-void InspectDevice(WGPUDevice device)
+void Application::inspectDevice(WGPUDevice device)
 {
 	std::vector<WGPUFeatureName> deviceFeat;
 	size_t featureCount = wgpuDeviceEnumerateFeatures(device, nullptr);
@@ -264,6 +273,9 @@ void InspectDevice(WGPUDevice device)
 			"\n - maxTextureDimension3D: " << deviceLimits.limits.maxTextureDimension3D <<
 			"\n - maxTextureArrayLayers: " << deviceLimits.limits.maxTextureArrayLayers << "\n";
 	}
+
+	// IMPORTANT FOR UNIFORMS IN SHADER!
+	m_uniformStride = ceilToNextMultiple((uint32_t)sizeof(MyUniforms), (uint32_t)deviceLimits.limits.minUniformBufferOffsetAlignment);
 
 	SPDLOG_INFO("{}", ss.str());
 }
@@ -329,7 +341,7 @@ bool Application::Initialize()
 	adapterOpts.backendType = WGPUBackendType_Vulkan;
 	m_adapter = requestAdapterSync(m_instance, &adapterOpts);
 	SPDLOG_INFO("Created adapter.");
-	DisplayAdapterInfo(m_adapter);
+	displayAdapterInfo(m_adapter);
 
 	// Device creation
 
@@ -361,7 +373,7 @@ bool Application::Initialize()
 	deviceDesc.deviceLostCallbackInfo.userdata = this;
 	m_device = requestDeviceSync(m_adapter, &deviceDesc);
 	SPDLOG_INFO("Created device.");
-	InspectDevice(m_device);
+	inspectDevice(m_device);
 
 	// Device error callback
 
@@ -445,9 +457,9 @@ void Application::initializeBindGroups()
 	WGPUBindGroupLayoutEntry bindingLayout = {};
 	setDefault(bindingLayout);
 	bindingLayout.binding = 0;
-	bindingLayout.visibility = WGPUShaderStage_Vertex;
+	bindingLayout.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
 	bindingLayout.buffer.type = WGPUBufferBindingType_Uniform;
-	bindingLayout.buffer.minBindingSize = 4 * sizeof(float); // Need multiple of 16 for uniform buffer
+	bindingLayout.buffer.minBindingSize = sizeof(MyUniforms); // Need multiple of 16 for uniform buffer
 
 	// 2. Create bind group layout (blueprint)
 	WGPUBindGroupLayoutDescriptor bindGroupLayoutDesc = {};
@@ -463,7 +475,7 @@ void Application::initializeBindGroups()
 	binding.binding = 0; // Index of binding
 	binding.buffer = m_uniformBuffer;
 	binding.offset = 0;
-	binding.size = 4 * sizeof(float);
+	binding.size = sizeof(MyUniforms);
 	// Don't use other two for now
 
 	// 4. Create the actual bind group
@@ -591,74 +603,6 @@ void Application::initializePipeline()
 	}
 }
 
-void Application::foobarBuffers()
-{
-	WGPUBufferDescriptor bufferDesc = {};
-	bufferDesc.nextInChain = nullptr;
-	bufferDesc.label = "Some GPU-side data buffer";
-	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc;
-	bufferDesc.size = 16;
-	bufferDesc.mappedAtCreation = false;
-	m_buffer1 = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
-	bufferDesc.label = "Output buffer";
-	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-	m_buffer2 = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
-
-	std::vector<uint8_t> numbers(16);
-	for (uint8_t i = 0; i < 16; i++) numbers[i] = i;
-	wgpuQueueWriteBuffer(m_queue, m_buffer1, 0, numbers.data(), numbers.size()); // Copies from 'numbers' on RAM to 'buffer1' on GPU's VRAM
-
-	// 1. We are allowed to free the memory of stuff sent to GPU buffer on CPU
-	// 2. Anything sent to the queue after the previous operation will not executed before the previous operation is finished
-
-	WGPUCommandEncoderDescriptor cmdEncoderDesc = {};
-
-	WGPUCommandEncoder cmdEncoder = wgpuDeviceCreateCommandEncoder(m_device, nullptr);
-	wgpuCommandEncoderCopyBufferToBuffer(cmdEncoder, m_buffer1, 0, m_buffer2, 0, 16);
-	WGPUCommandBuffer cmdBuffer = wgpuCommandEncoderFinish(cmdEncoder, nullptr);
-	wgpuCommandEncoderRelease(cmdEncoder);
-	wgpuQueueSubmit(m_queue, 1, &cmdBuffer);
-	wgpuCommandBufferRelease(cmdBuffer);
-
-	// Struct needed to access content of buffer after operation has been performed
-	struct Context
-	{
-		bool ready;
-		WGPUBuffer buffer;
-	};
-
-	auto onBufferToMapped = [](WGPUBufferMapAsyncStatus status, void* pUserData)
-	{
-		Context& context = *reinterpret_cast<Context*>(pUserData);
-		context.ready = true;
-		SPDLOG_INFO("Buffer 2 mapped with status: {:#x}", (int)status);
-		if (status != WGPUBufferMapAsyncStatus_Success) return;
-
-		uint8_t* bufferData = (uint8_t*)wgpuBufferGetConstMappedRange(context.buffer, 0, 16);
-
-		std::stringstream ss;
-		ss << "bufferedData = [";
-		for (int i = 0; i < 16; i++) {
-			if (i > 0) {
-				ss << ", ";
-			}
-			ss << (int)bufferData[i];
-		}
-		ss << "]";
-		SPDLOG_INFO("{}", ss.str());
-
-		wgpuBufferUnmap(context.buffer);
-	};
-
-	Context context = {false, m_buffer2};
-	wgpuBufferMapAsync(m_buffer2, WGPUMapMode_Read, 0, 16, onBufferToMapped, (void*)&context);
-
-	while (!context.ready) {
-		// Keep operating on interal GPU stuff until the buffer copy is finished
-		wgpuDeviceTick(m_device);
-	}
-}
-
 void Application::intializeBuffers()
 {
 	std::vector<float> pointData;
@@ -695,10 +639,20 @@ void Application::intializeBuffers()
 	// Uniform buffer
 	bufferDesc.label = "My main uniform buffer";
 	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Uniform;
-	bufferDesc.size = 4 * sizeof(float); // IMPORTANT! MAKE SURE WE ARE USING MULTIPLES OF 16
+	bufferDesc.size = m_uniformStride + sizeof(MyUniforms); // IMPORTANT! MAKE SURE WE ARE USING MULTIPLES OF 16
 	m_uniformBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
-	float currentTime = 1.0f;
-	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0, &currentTime, bufferDesc.size);
+
+	MyUniforms uniforms;
+
+	// Upload first value
+	uniforms.color = {0.0f, 1.0f, 0.4f, 1.0f};
+	uniforms.time = 1.0f;
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0, &uniforms, sizeof(MyUniforms));
+
+	// Second value
+	uniforms.color = {1.0f, 1.0f, 1.0f, 0.7f};
+	uniforms.time = -1.0f;
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, m_uniformStride, &uniforms, sizeof(MyUniforms));
 }
 
 void Application::MainLoop()
@@ -707,9 +661,10 @@ void Application::MainLoop()
 	wgpuInstanceProcessEvents(m_instance);
 	wgpuDeviceTick(m_device);
 
-	// 0. Update buffers
+	// 0. Update buffers (only upload time to MyUniforms, which is the first 4 bytes)
 	float t = static_cast<float>(glfwGetTime());
-	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0, &t, sizeof(float));
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, time), &t, sizeof(float));
+	// wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 1 * m_uniformStride + offsetof(MyUniforms, time), &t, sizeof(float));
 
 	// 1. Get textures from our surface
 	auto [surfaceTexture, targetView] = getNextSurfaceViewData();
@@ -749,8 +704,12 @@ void Application::MainLoop()
 	wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder, m_indexBuffer, WGPUIndexFormat_Uint16, 0, wgpuBufferGetSize(m_indexBuffer));
 
 	// Set binding group here!
-	wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 0, nullptr);
-
+	uint32_t dynamicOffset = 0 * m_uniformStride;
+	wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 1, &dynamicOffset);
+	wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
+	
+	dynamicOffset = 1 * m_uniformStride;
+	wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 1, &dynamicOffset);
 	wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
 
 	wgpuRenderPassEncoderEnd(renderPassEncoder);
@@ -820,9 +779,6 @@ void Application::Terminate()
 	wgpuBufferRelease(m_pointBuffer);
 	wgpuBufferRelease(m_indexBuffer);
 
-	// wgpuBufferRelease(m_buffer2);
-	// wgpuBufferRelease(m_buffer1);
-	
 	wgpuSurfaceUnconfigure(m_surface);
 	wgpuSurfaceRelease(m_surface);
 	wgpuQueueRelease(m_queue);
