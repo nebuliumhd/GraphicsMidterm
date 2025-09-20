@@ -1,6 +1,7 @@
 #pragma once
 
 #include <utility>
+#include <filesystem>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -23,10 +24,11 @@ private:
 	WGPURenderPipeline m_pipeline = nullptr;
 	WGPUTextureFormat m_surfaceFormat = WGPUTextureFormat_Undefined;
 	WGPUBuffer m_buffer1 = nullptr, m_buffer2 = nullptr;
-	WGPUBuffer m_vertexBuffer = nullptr;
+	WGPUBuffer m_pointBuffer = nullptr, m_indexBuffer = nullptr;
 
 	bool m_gpuIdle = false;
-	uint32_t m_vertexCount = 0;
+	// uint32_t m_vertexCount = 0;
+	uint32_t m_indexCount = 0;
 
 	std::pair<WGPUSurfaceTexture, WGPUTextureView> getNextSurfaceViewData();
 	WGPUAdapter requestAdapterSync(WGPUInstance instance, const WGPURequestAdapterOptions* options);

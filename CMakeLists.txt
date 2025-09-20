@@ -11,6 +11,19 @@ file(GLOB_RECURSE APP_SRC ${CMAKE_SOURCE_DIR}/src/*.cpp)
 
 add_executable(App ${APP_SRC})
 
+option(DEV_MODE "Set up development helper settings" ON)
+
+if(DEV_MODE)
+    target_compile_definitions(App PRIVATE
+        RESOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/res/"
+    )
+else()
+    # Release version
+    target_compile_definitions(App PRIVATE
+        RESOURCE_DIR="./res/"
+    )
+endif()
+
 set_target_properties(App PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
