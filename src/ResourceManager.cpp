@@ -2,12 +2,8 @@
 #include <sstream>
 #include <string>
 
-#define TINYOBJLOADER_IMPLEMENTATION
-#include "tinyobjloader/tiny_obj_loader.h"
-
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb/stb_image.h"
-
+#include <stb/stb_image.h>
+#include <tinyobjloader/tiny_obj_loader.h>
 #include <spdlog/spdlog.h>
 #include "ResourceManager.hpp"
 

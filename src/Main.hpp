@@ -43,8 +43,9 @@ private:
 	WGPUDevice m_device = nullptr;
 	WGPUQueue m_queue = nullptr;
 	WGPUSurface m_surface = nullptr;
+	WGPUSwapChain m_swapChain = nullptr;
+	WGPUTextureFormat m_swapChainFormat = WGPUTextureFormat_Undefined;
 	WGPURenderPipeline m_pipeline = nullptr;
-	WGPUTextureFormat m_surfaceFormat = WGPUTextureFormat_Undefined;
 	WGPUBuffer m_vertexBuffer = nullptr, m_indexBuffer = nullptr, m_uniformBuffer = nullptr;
 	WGPUPipelineLayout m_layout = nullptr;
 	WGPUBindGroup m_bindGroup = nullptr;
@@ -57,7 +58,7 @@ private:
 	bool m_gpuIdle = false;
 	// uint32_t m_vertexCount = 0;
 	std::vector<VertexAttributes> m_vertexData;
-	uint32_t m_indexCount = 0;
+	uint32_t m_vertexCount = 0;
 	MyUniforms m_uniforms;
 	uint32_t m_uniformStride = 0;
 
@@ -73,8 +74,13 @@ private:
 	void displayAdapterInfo(WGPUAdapter adapter);
 	void inspectDevice(WGPUDevice device);
 	
-	void initializeBuffers();
-	void initializePipeline();
-	void initializeBindGroups();
-	void calculateUniforms();
+	// For the initialization of the class
+	bool initWindowAndDevice();
+	bool initSwapChain();
+	bool initDepthBuffer();
+	bool initTexture();
+	bool initGeometry();
+	bool initUniforms();
+	bool initRenderPipeline();
+	bool initBindGroup();
 };
