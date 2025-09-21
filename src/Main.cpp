@@ -22,6 +22,8 @@
 #error "A RESOURCE_DIR must be defined to compile the project!"
 #endif
 
+constexpr float PI = 3.14159265358979323846f;
+
 // Takes value and rounds it up to the next multiple of step
 uint32_t Application::ceilToNextMultiple(uint32_t value, uint32_t step)
 {
@@ -105,14 +107,14 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 
 	// Vertex buffers
 
-	// Three vertex attributes (position, normal, and color)
-	requiredLimits.limits.maxVertexAttributes = 3;
+	// Three vertex attributes (position, normal, color, and uv)
+	requiredLimits.limits.maxVertexAttributes = 4;
 	// One vertex buffer
 	requiredLimits.limits.maxVertexBuffers = 1;
-	// In otherwords, how many individual attributes can be passed from the vertex to fragment shader (x, y, z) and (nx, ny, nz)
-	requiredLimits.limits.maxInterStageShaderComponents = 6;
+	// In otherwords, how many individual attributes can be passed from the vertex to fragment shader (x, y, z), (nx, ny, nz),  and (u, v)
+	requiredLimits.limits.maxInterStageShaderComponents = 8;
 	// Minimum required buffer size needed (10k vertices allowed for meshes)
-	requiredLimits.limits.maxBufferSize = 10000 * sizeof(VertexAttributes);
+	requiredLimits.limits.maxBufferSize = 150000 * sizeof(VertexAttributes);
 	// Maximum stride between consecutive vertices in a vertex buffer
 	requiredLimits.limits.maxVertexBufferArrayStride = sizeof(VertexAttributes); // For X, Y, Z, R, G, B
 
@@ -129,8 +131,11 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 
 	// Textures / Depth buffer
 
-	requiredLimits.limits.maxTextureDimension1D = 1920;
-	requiredLimits.limits.maxTextureDimension2D = 1080;
+	requiredLimits.limits.maxSamplersPerShaderStage = 1; // Allows for one sampler in the shader
+	requiredLimits.limits.maxSampledTexturesPerShaderStage = 1; // Allows a single texture to be sampled in a shader
+	// Upped both for higher-resolution textures
+	requiredLimits.limits.maxTextureDimension1D = 2048;
+	requiredLimits.limits.maxTextureDimension2D = 2048;
 	requiredLimits.limits.maxTextureArrayLayers = 1;
 
 	// IMPORTANT!!! MUST SET THESE TO AN INITIALIZED VALUE
@@ -471,13 +476,10 @@ bool Application::Initialize()
 
 	wgpuSurfaceConfigure(m_surface, &surfaceConfig);
 
-	// Render pipeline
-	// DO THESE BEFORE CREATING THE PIPELINE
-	intializeBuffers();
-	initializeBindGroups(); // The bind groups DEPEND on the buffers
-
-	SPDLOG_INFO("Creating render pipeline...");
+	// IMPORTANT: ORDER MATTERS HERE!!!!!
+	initializeBuffers();
 	initializePipeline();
+	initializeBindGroups(); // Do this last
 
 	if (!m_pipeline) {
 		SPDLOG_ERROR("Failed to create a render pipeline!");
@@ -489,41 +491,84 @@ bool Application::Initialize()
 
 void Application::initializeBindGroups()
 {
-	// 1. Create bind group layout entry
-	WGPUBindGroupLayoutEntry bindingLayout = {};
+	// 2. Create bind group entry (actual resource data)
+	std::vector<WGPUBindGroupEntry> bindings(3);
+	// Uniform buffer
+	bindings[0].nextInChain = nullptr;
+	bindings[0].binding = 0; // Index of binding
+	bindings[0].buffer = m_uniformBuffer;
+	bindings[0].offset = 0;
+	bindings[0].size = sizeof(MyUniforms);
+	// Texture
+	bindings[1].nextInChain = nullptr;
+	bindings[1].binding = 1;
+	bindings[1].textureView = m_textureView;
+	// Sampler
+	bindings[2].nextInChain = nullptr;
+	bindings[2].binding = 2;
+	bindings[2].sampler = m_sampler;
+
+	// 3. Create the actual bind group
+	WGPUBindGroupDescriptor bindGroupDesc = {};
+	bindGroupDesc.nextInChain = nullptr;
+	bindGroupDesc.label = "My bind group descriptor";
+	bindGroupDesc.layout = m_bindGroupLayout;
+	bindGroupDesc.entryCount = static_cast<uint32_t>(bindings.size());
+	bindGroupDesc.entries = bindings.data();
+	m_bindGroup = wgpuDeviceCreateBindGroup(m_device, &bindGroupDesc);
+}
+
+void Application::initializePipeline()
+{
+	// Create shader
+	WGPUShaderModule shaderModule = ResourceManager::LoadShaderModule(RESOURCE_DIR "shader.wgsl", m_device);
+	if (shaderModule == nullptr) {
+		SPDLOG_ERROR("Failed to create shader module!");
+		exit(1);
+	}
+	SPDLOG_INFO("Shader module created.");
+
+	WGPURenderPipelineDescriptor pipelineDesc = {};
+	pipelineDesc.nextInChain = nullptr;
+	pipelineDesc.label = "Main pipeline";
+	
+	// Layout
+	
+	// 1. Create bind group layout entries
+	std::vector<WGPUBindGroupLayoutEntry> bindingLayoutEntries(3);
+
+	// For the uniform buffer
+	WGPUBindGroupLayoutEntry& bindingLayout = bindingLayoutEntries[0];
 	setDefault(bindingLayout);
 	bindingLayout.binding = 0;
 	bindingLayout.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
 	bindingLayout.buffer.type = WGPUBufferBindingType_Uniform;
 	bindingLayout.buffer.minBindingSize = sizeof(MyUniforms); // Need multiple of 16 for uniform buffer
 
+	// For the texture
+	WGPUBindGroupLayoutEntry& textureBindingLayout = bindingLayoutEntries[1];
+	setDefault(textureBindingLayout);
+	textureBindingLayout.binding = 1;
+	textureBindingLayout.visibility = WGPUShaderStage_Fragment;
+	textureBindingLayout.texture.sampleType = WGPUTextureSampleType_Float; // What variable type will be returned when sampling the texture
+	textureBindingLayout.texture.viewDimension = WGPUTextureViewDimension_2D;
+
+	// For the sampler
+	WGPUBindGroupLayoutEntry& samplerBindingLayout = bindingLayoutEntries[2];
+	setDefault(samplerBindingLayout);
+	samplerBindingLayout.binding = 2;
+	samplerBindingLayout.visibility = WGPUShaderStage_Fragment;
+	samplerBindingLayout.sampler.nextInChain = nullptr;
+	samplerBindingLayout.sampler.type = WGPUSamplerBindingType_Filtering;
+
 	// 2. Create bind group layout (blueprint)
 	WGPUBindGroupLayoutDescriptor bindGroupLayoutDesc = {};
 	bindGroupLayoutDesc.nextInChain = nullptr;
 	bindGroupLayoutDesc.label = "My main binding group layout";
-	bindGroupLayoutDesc.entryCount = 1; // Just the u_time for now
-	bindGroupLayoutDesc.entries = &bindingLayout;
+	bindGroupLayoutDesc.entryCount = static_cast<uint32_t>(bindingLayoutEntries.size()); // Just the u_time for now
+	bindGroupLayoutDesc.entries = bindingLayoutEntries.data();
 	m_bindGroupLayout = wgpuDeviceCreateBindGroupLayout(m_device, &bindGroupLayoutDesc);
 
-	// 3. Create bind group entry (actual resource data)
-	WGPUBindGroupEntry binding = {};
-	binding.nextInChain = nullptr;
-	binding.binding = 0; // Index of binding
-	binding.buffer = m_uniformBuffer;
-	binding.offset = 0;
-	binding.size = sizeof(MyUniforms);
-	// Don't use other two for now
-
-	// 4. Create the actual bind group
-	WGPUBindGroupDescriptor bindGroupDesc = {};
-	bindGroupDesc.nextInChain = nullptr;
-	bindGroupDesc.label = "My bind group descriptor";
-	bindGroupDesc.layout = m_bindGroupLayout;
-	bindGroupDesc.entryCount = 1;
-	bindGroupDesc.entries = &binding;
-	m_bindGroup = wgpuDeviceCreateBindGroup(m_device, &bindGroupDesc);
-
-	// 5. Pipeline layout
 	WGPUPipelineLayoutDescriptor layoutDesc = {};
 	layoutDesc.nextInChain = nullptr;
 	layoutDesc.label = "Main pipeline layout";
@@ -537,29 +582,14 @@ void Application::initializeBindGroups()
 		exit(1);
 	}
 	SPDLOG_INFO("Pipeline layout created");
-}
 
-void Application::initializePipeline()
-{
-	// Create shader
-	WGPUShaderModule shaderModule = ResourceManager::LoadShaderModule(RESOURCE_DIR "/shader.wgsl", m_device);
-	if (shaderModule == nullptr) {
-		SPDLOG_ERROR("Failed to create shader module!");
-		exit(1);
-	}
-	SPDLOG_INFO("Shader module created.");
-
-	WGPURenderPipelineDescriptor pipelineDesc = {};
-	pipelineDesc.nextInChain = nullptr;
-	pipelineDesc.label = "Main pipeline";
-	
-	// Layout (NEEDS TO HAVE BINDGROUPS INITIALIZED FIRST!!!)
+	// 3. Insert into pipeline
 	pipelineDesc.layout = m_layout;
 
-	// Vertex buffer
+	// Vertex
 
+	std::vector<WGPUVertexAttribute> vertexAttribs(4);
 	// Position attribute
-	std::vector<WGPUVertexAttribute> vertexAttribs(3);
 	vertexAttribs[0].format = WGPUVertexFormat_Float32x3; // 3 32-bit floats for X, Y, (Z)
 	vertexAttribs[0].offset = offsetof(VertexAttributes, position);
 	vertexAttribs[0].shaderLocation = 0; // @location(0)
@@ -571,9 +601,13 @@ void Application::initializePipeline()
 	vertexAttribs[2].format = WGPUVertexFormat_Float32x3;
 	vertexAttribs[2].offset = offsetof(VertexAttributes, color);
 	vertexAttribs[2].shaderLocation = 2; // @location(2)
+	// UV attribute
+	vertexAttribs[3].format = WGPUVertexFormat_Float32x2;
+	vertexAttribs[3].offset = offsetof(VertexAttributes, uv);
+	vertexAttribs[3].shaderLocation = 3;
 
 	WGPUVertexBufferLayout vertexBufferLayout = {};
-	vertexBufferLayout.arrayStride = sizeof(VertexAttributes); // 9 attributes: (X, Y, Z), (NX, NY, NZ), and (R, G, B)
+	vertexBufferLayout.arrayStride = sizeof(VertexAttributes); // 11 attributes: (X, Y, Z), (NX, NY, NZ), (R, G, B), and (U, V)
 	vertexBufferLayout.stepMode = WGPUVertexStepMode_Vertex;
 	vertexBufferLayout.attributeCount = static_cast<uint32_t>(vertexAttribs.size());
 	vertexBufferLayout.attributes = vertexAttribs.data();
@@ -599,49 +633,24 @@ void Application::initializePipeline()
 	WGPUDepthStencilState depthStencilState = {};
 	setDefault(depthStencilState);
 	WGPUTextureFormat depthTextureFormat = WGPUTextureFormat_Depth24Plus;
-	depthStencilState.format = depthTextureFormat;
+	depthStencilState.format = m_depthTextureFormat;
 	depthStencilState.depthWriteEnabled = true;
 	depthStencilState.depthCompare = WGPUCompareFunction_Less; // Blend if current depth value is less than the one stored in the Z-Buffer
 	depthStencilState.stencilReadMask = 0;
 	depthStencilState.stencilWriteMask = 0;
-
-	// 2. Create the depth texture
-	WGPUTextureDescriptor depthTextureDesc = {};
-	depthTextureDesc.nextInChain = nullptr;
-	depthTextureDesc.label = "My main depth texture";
-	depthTextureDesc.usage = WGPUTextureUsage_RenderAttachment;
-	depthTextureDesc.dimension = WGPUTextureDimension_2D;
-	depthTextureDesc.size = {1920, 1080, 1};
-	depthTextureDesc.format = depthTextureFormat;
-	depthTextureDesc.mipLevelCount = 1;
-	depthTextureDesc.sampleCount = 1;
-	depthTextureDesc.viewFormatCount = 1;
-	depthTextureDesc.viewFormats = &depthTextureFormat;
-	m_depthTexture = wgpuDeviceCreateTexture(m_device, &depthTextureDesc);
-
-	// 3. Create a texture view
-	WGPUTextureViewDescriptor depthTextureViewDesc = {};
-	depthTextureViewDesc.nextInChain = nullptr;
-	depthTextureViewDesc.label = "My main depth texture view";
-	depthTextureViewDesc.format = depthTextureFormat;
-	depthTextureViewDesc.dimension = WGPUTextureViewDimension_2D;
-	depthTextureViewDesc.baseMipLevel = 0;
-	depthTextureViewDesc.mipLevelCount = 1;
-	depthTextureViewDesc.baseArrayLayer = 0;
-	depthTextureViewDesc.arrayLayerCount = 1;
-	depthTextureViewDesc.aspect = WGPUTextureAspect_DepthOnly;
-	m_depthTextureView = wgpuTextureCreateView(m_depthTexture, &depthTextureViewDesc);
 	
-	// 4. Insert into pipeline
+	// 2. Insert into pipeline
 	pipelineDesc.depthStencil = &depthStencilState;
 
 	// Multisampling
+
 	pipelineDesc.multisample.nextInChain = nullptr;
 	pipelineDesc.multisample.count = 1; // One subelement (No AA)
 	pipelineDesc.multisample.mask = ~0u; // All bits on
 	pipelineDesc.multisample.alphaToCoverageEnabled = false;
 
 	// Fragment
+
 	WGPUBlendState blendState = {};
 	blendState.color.operation = WGPUBlendOperation_Add;
 	blendState.color.srcFactor = WGPUBlendFactor_SrcAlpha;
@@ -685,19 +694,14 @@ void Application::initializePipeline()
 	}
 }
 
-void Application::intializeBuffers()
+void Application::initializeBuffers()
 {
-	std::vector<float> pointData;
 	std::vector<uint16_t> indexData;
-	bool success = ResourceManager::LoadGeometryFromObj(RESOURCE_DIR "pyramid.obj", m_vertexData);
+	bool success = ResourceManager::LoadGeometryFromObj(RESOURCE_DIR "fourareen.obj", m_vertexData);
 	if (!success) {
 		SPDLOG_ERROR("Could not load geometry!");
 		exit(1);
 	}
-
-	// Not needed?
-	// m_vertexCount = static_cast<uint32_t>(pointData.size() / 5); // 5 is the number of COLLECTIVE vertex attributes
-	
 
 	// Vertex buffer
 	WGPUBufferDescriptor bufferDesc = {};
@@ -737,34 +741,164 @@ void Application::intializeBuffers()
 	//m_uniforms.color = {1.0f, 1.0f, 1.0f, 0.7f};
 	//m_uniforms.time = -1.0f;
 	//wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, m_uniformStride, &m_uniforms, sizeof(MyUniforms));
+
+	// 0. Update class members
+	m_depthTextureFormat = WGPUTextureFormat_Depth24Plus;
+
+	// 1. Create resources
+
+	m_textureView = nullptr;
+	m_texture = ResourceManager::LoadTexture(RESOURCE_DIR "fourareen2K_albedo.jpg", m_device, &m_textureView);
+	if (!m_texture) {
+		SPDLOG_ERROR("Could not load texture!");
+		exit(1);
+	}
+
+	// Regular texture
+	//WGPUTextureDescriptor textureDesc = {};
+	//textureDesc.nextInChain = nullptr;
+	//textureDesc.label = "My main texture";
+	//textureDesc.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+	//textureDesc.dimension = WGPUTextureDimension_2D;
+	//textureDesc.size = {256, 256, 1};
+	//textureDesc.format = WGPUTextureFormat_RGBA8Unorm;
+	//textureDesc.mipLevelCount = 8; // 8 mip maps
+	//textureDesc.sampleCount = 1;
+	//textureDesc.viewFormatCount = 0;
+	//textureDesc.viewFormats = nullptr;
+	//m_texture = wgpuDeviceCreateTexture(m_device, &textureDesc);
+
+	//WGPUTextureViewDescriptor textureViewDesc = {};
+	//textureViewDesc.nextInChain = nullptr;
+	//textureViewDesc.label = "My main texture view";
+	//textureViewDesc.format = textureDesc.format;
+	//textureViewDesc.dimension = WGPUTextureViewDimension_2D;
+	//textureViewDesc.baseMipLevel = 0;
+	//textureViewDesc.mipLevelCount = textureDesc.mipLevelCount;
+	//textureViewDesc.baseArrayLayer = 0;
+	//textureViewDesc.arrayLayerCount = 1;
+	//textureViewDesc.aspect = WGPUTextureAspect_All;
+	//m_textureView = wgpuTextureCreateView(m_texture, &textureViewDesc);
+
+	//WGPUImageCopyTexture destination;
+	//destination.texture = m_texture;
+	//destination.mipLevel = 0;
+	//destination.origin = {0, 0, 0}; // Offset for writeBuffer (what part of the image do we change)
+	//destination.aspect = WGPUTextureAspect_All; // Only relevant to depth/stencil textures
+
+	//WGPUTextureDataLayout source;
+	//source.nextInChain = nullptr;
+	//source.offset = 0;
+	//
+	//WGPUExtent3D mipLevelSize = textureDesc.size;
+	//std::vector<uint8_t> previousLevelPixels;
+	//for (uint32_t level = 0; level < textureDesc.mipLevelCount; ++level) {
+	//	// The entire image for the current mip level
+	//	std::vector<uint8_t> pixels(4 * mipLevelSize.width * mipLevelSize.height);
+	//	for (uint32_t i = 0; i < mipLevelSize.width; ++i) {
+	//		for (uint32_t j = 0; j < mipLevelSize.height; ++j) {
+	//			uint8_t* p = &pixels[4 * (j * mipLevelSize.width + i)];
+	//			if (level == 0) {
+	//				// Our initial texture formula
+	//				p[0] = (i / 16) % 2 == (j / 16) % 2 ? 255 : 0; // r
+	//				p[1] = ((i - j) / 16) % 2 == 0 ? 255 : 0; // g
+	//				p[2] = ((i + j) / 16) % 2 == 0 ? 255 : 0; // b
+	//			} else {
+	//				// Get the corresponding 4 pixels from the previous level
+	//				uint8_t* p00 = &previousLevelPixels[4 * ((2 * j + 0) * (2 * mipLevelSize.width) + (2 * i + 0))];
+	//				uint8_t* p01 = &previousLevelPixels[4 * ((2 * j + 0) * (2 * mipLevelSize.width) + (2 * i + 1))];
+	//				uint8_t* p10 = &previousLevelPixels[4 * ((2 * j + 1) * (2 * mipLevelSize.width) + (2 * i + 0))];
+	//				uint8_t* p11 = &previousLevelPixels[4 * ((2 * j + 1) * (2 * mipLevelSize.width) + (2 * i + 1))];
+	//				// Average
+	//				p[0] = (p00[0] + p01[0] + p10[0] + p11[0]) / 4;
+	//				p[1] = (p00[1] + p01[1] + p10[1] + p11[1]) / 4;
+	//				p[2] = (p00[2] + p01[2] + p10[2] + p11[2]) / 4;
+	//			}
+	//			p[3] = 255; // a
+	//		}
+	//	}
+
+	//	destination.mipLevel = level; // Current
+
+	//	source.bytesPerRow = 4 * mipLevelSize.width;
+	//	source.rowsPerImage = mipLevelSize.height;
+
+	//	wgpuQueueWriteTexture(m_queue, &destination, pixels.data(), pixels.size(), &source, &mipLevelSize);
+
+	//	mipLevelSize.width /= 2;
+	//	mipLevelSize.height /= 2;
+	//	previousLevelPixels = std::move(pixels);
+	//}
+
+	// Depth texture
+	WGPUTextureDescriptor depthTextureDesc = {};
+	depthTextureDesc.nextInChain = nullptr;
+	depthTextureDesc.label = "My main depth texture";
+	depthTextureDesc.usage = WGPUTextureUsage_RenderAttachment;
+	depthTextureDesc.dimension = WGPUTextureDimension_2D;
+	depthTextureDesc.size = {1920, 1080, 1};
+	depthTextureDesc.format = m_depthTextureFormat;
+	depthTextureDesc.mipLevelCount = 1;
+	depthTextureDesc.sampleCount = 1;
+	depthTextureDesc.viewFormatCount = 1;
+	depthTextureDesc.viewFormats = &m_depthTextureFormat;
+	m_depthTexture = wgpuDeviceCreateTexture(m_device, &depthTextureDesc);
+
+	WGPUTextureViewDescriptor depthTextureViewDesc = {};
+	depthTextureViewDesc.nextInChain = nullptr;
+	depthTextureViewDesc.label = "My main depth texture view";
+	depthTextureViewDesc.format = m_depthTextureFormat;
+	depthTextureViewDesc.dimension = WGPUTextureViewDimension_2D;
+	depthTextureViewDesc.baseMipLevel = 0;
+	depthTextureViewDesc.mipLevelCount = 1;
+	depthTextureViewDesc.baseArrayLayer = 0;
+	depthTextureViewDesc.arrayLayerCount = 1;
+	depthTextureViewDesc.aspect = WGPUTextureAspect_DepthOnly;
+	m_depthTextureView = wgpuTextureCreateView(m_depthTexture, &depthTextureViewDesc);
+
+	// 2. Create the sampler
+	WGPUSamplerDescriptor samplerDesc = {};
+	samplerDesc.nextInChain = nullptr;
+	samplerDesc.label = "My main sampler";
+	samplerDesc.addressModeU = WGPUAddressMode_Repeat;
+	samplerDesc.addressModeV = WGPUAddressMode_Repeat;
+	samplerDesc.addressModeW = WGPUAddressMode_ClampToEdge;
+	samplerDesc.magFilter = WGPUFilterMode_Linear;
+	samplerDesc.minFilter = WGPUFilterMode_Linear;
+	samplerDesc.mipmapFilter = WGPUMipmapFilterMode_Linear;
+	samplerDesc.lodMinClamp = 0.0f;
+	samplerDesc.lodMaxClamp = 8.0f;
+	samplerDesc.compare = WGPUCompareFunction_Undefined;
+	samplerDesc.maxAnisotropy = 1;
+	m_sampler = wgpuDeviceCreateSampler(m_device, &samplerDesc);
 }
 
 void Application::calculateUniforms()
 {
-	constexpr float PI = 3.14159265358979323846f;
-
 	// Model transformation matrix
 
 	float angle1 = (float)glfwGetTime();
 	float angle2 = 3.0 * PI / 4.0;
 
-	glm::mat4x4 S = glm::scale(glm::mat4x4(1.0), glm::vec3(0.3f));
-	glm::mat4x4 T1 = glm::translate(glm::mat4x4(1.0), glm::vec3(0.5, 0.0, 0.0));
-	glm::mat4x4 R1 = glm::rotate(glm::mat4x4(1.0), angle1, glm::vec3(0.0, 0.0, 1.0));
-	m_uniforms.modelMatrix = R1 * T1 * S;
+	// glm::mat4x4 S = glm::scale(glm::mat4x4(1.0), glm::vec3(0.3f));
+	// glm::mat4x4 T1 = glm::translate(glm::mat4x4(1.0), glm::vec3(0.5, 0.0, 0.0));
+	// glm::mat4x4 R1 = glm::rotate(glm::mat4x4(1.0), angle1, glm::vec3(0.0, 0.0, 1.0));
+	// m_uniforms.modelMatrix = R1 * T1 * S;
+	m_uniforms.modelMatrix = glm::mat4x4(1.0);
 
-	glm::vec3 focalPoint = glm::vec3(0.0, 0.0, -2.0);
-	float focalLength = 2.0f;
-	glm::mat4x4 R2 = glm::rotate(glm::mat4x4(1.0), -angle2, glm::vec3(1.0, 0.0, 0.0));
-	glm::mat4x4 T2 = glm::translate(glm::mat4x4(1.0), -focalPoint);
-	m_uniforms.viewMatrix = T2 * R2;
+	// glm::vec3 focalPoint = glm::vec3(0.0, 0.0, -2.0);
+	// float focalLength = 2.0f;
+	// glm::mat4x4 R2 = glm::rotate(glm::mat4x4(1.0), -angle2, glm::vec3(1.0, 0.0, 0.0));
+	// glm::mat4x4 T2 = glm::translate(glm::mat4x4(1.0), -focalPoint);
+	// m_uniforms.viewMatrix = T2 * R2;
+	m_uniforms.viewMatrix = glm::lookAt(glm::vec3(-2.0f, -3.0f, 2.0f), glm::vec3(0.0f), glm::vec3(0, 0, 1));
 
-	float near = 0.001f;
-	float far = 100.0f;
-	float ratio = 1920.0f / 1080.0f;
-	float fov = 2 * glm::atan(1 / focalLength);
-	m_uniforms.projectionMatrix = glm::perspective(fov, ratio, near, far);
-
+	// float near = 0.001f;
+	// float far = 100.0f;
+	// float ratio = 1920.0f / 1080.0f;
+	// float fov = 2 * glm::atan(1 / focalLength);
+	// m_uniforms.projectionMatrix = glm::perspective(fov, ratio, near, far);
+	m_uniforms.projectionMatrix = glm::perspective(45 * PI / 180, 1920.0f / 1080.0f, 0.01f, 100.0f);
 
 	// Other uniforms
 	m_uniforms.color = {0.0f, 1.0f, 0.4f, 1.0f};
@@ -785,14 +919,19 @@ void Application::MainLoop()
 
 	// 0. Update buffers (only upload time to MyUniforms, which is the first 4 bytes)
 	// TODO: Optimize
-	float t = static_cast<float>(glfwGetTime());
-	glm::mat4x4 S = glm::scale(glm::mat4x4(1.0), glm::vec3(0.3f));
-	glm::mat4x4 T1 = glm::translate(glm::mat4x4(1.0), glm::vec3(0.5, 0.0, 0.0));
-	glm::mat4x4 R1 = glm::rotate(glm::mat4x4(1.0), t, glm::vec3(0.0, 0.0, 1.0));
-	m_uniforms.modelMatrix = R1 * T1 * S;
-	m_uniforms.time = t;
-	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, modelMatrix), &m_uniforms.modelMatrix, sizeof(MyUniforms::modelMatrix));
+	// float t = static_cast<float>(glfwGetTime());
+	// glm::mat4x4 S = glm::scale(glm::mat4x4(1.0), glm::vec3(0.3f));
+	// glm::mat4x4 T1 = glm::translate(glm::mat4x4(1.0), glm::vec3(0.5, 0.0, 0.0));
+	// glm::mat4x4 R1 = glm::rotate(glm::mat4x4(1.0), t, glm::vec3(0.0, 0.0, 1.0));
+	// m_uniforms.modelMatrix = R1 * T1 * S;
+	// m_uniforms.time = t;
+	// wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, modelMatrix), &m_uniforms.modelMatrix, sizeof(MyUniforms::modelMatrix));
 	// wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 1 * m_uniformStride + offsetof(MyUniforms, time), &t, sizeof(float));
+	
+
+	// float viewZ = glm::mix(0.0f, 0.25f, cos(2 * PI * glfwGetTime() / 4) * 0.5 + 0.5);
+	// m_uniforms.viewMatrix = glm::lookAt(glm::vec3(-0.5f, -1.5f, viewZ + 0.25f), glm::vec3(0.0f), glm::vec3(0, 0, 1));
+	// wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, offsetof(MyUniforms, viewMatrix), &m_uniforms.viewMatrix, sizeof(MyUniforms::viewMatrix));
 
 	// 1. Get textures from our surface
 	auto [surfaceTexture, targetView] = getNextSurfaceViewData();
@@ -922,6 +1061,8 @@ void Application::Terminate()
 	wgpuBufferRelease(m_vertexBuffer);
 
 	// Check if we can release stuff here?
+	wgpuTextureDestroy(m_texture);
+	wgpuTextureRelease(m_texture);
 	wgpuTextureViewRelease(m_depthTextureView);
 	wgpuTextureDestroy(m_depthTexture);
 	wgpuTextureRelease(m_depthTexture);

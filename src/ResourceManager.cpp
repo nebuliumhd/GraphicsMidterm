@@ -5,6 +5,9 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tinyobjloader/tiny_obj_loader.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
+
 #include <spdlog/spdlog.h>
 #include "ResourceManager.hpp"
 
@@ -95,27 +98,97 @@ bool ResourceManager::LoadGeometryFromObj(const std::filesystem::path& path, std
 
 			// Avoid mirroring by adding a minus
 			vertexData[offset + i].position = {
-				attrib.vertices[3 * idx.vertex_index + 0],
+				attrib.vertices[3 * idx.vertex_index],
 				-attrib.vertices[3 * idx.vertex_index + 2], 
 				attrib.vertices[3 * idx.vertex_index + 1]
 			};
 
 			// Also apply the transform to normals!!
 			vertexData[offset + i].normal = {
-				attrib.normals[3 * idx.normal_index + 0],
+				attrib.normals[3 * idx.normal_index],
 				-attrib.normals[3 * idx.normal_index + 2],
 				attrib.normals[3 * idx.normal_index + 1]
 			};
 
 			vertexData[offset + i].color = {
-				attrib.colors[3 * idx.vertex_index + 0],
+				attrib.colors[3 * idx.vertex_index],
 				attrib.colors[3 * idx.vertex_index + 1],
 				attrib.colors[3 * idx.vertex_index + 2]
+			};
+
+			vertexData[offset + i].uv = {
+				attrib.texcoords[2 * idx.texcoord_index],
+				1 - attrib.texcoords[2 * idx.texcoord_index + 1] // Invert V axis for modern graphics APIs (Vulkan, DX12, etc.)
 			};
 		}
 	}
 
 	return true;
+}
+
+void ResourceManager::writeMipMaps(WGPUDevice device, WGPUTexture texture, WGPUExtent3D textureSize, uint32_t mipLevelCount, const unsigned char* pixelData)
+{
+	WGPUImageCopyTexture destination;
+	destination.texture = texture;
+	destination.mipLevel = 0;
+	destination.origin = {0, 0, 0}; // Offset for writeBuffer (what part of the image do we change)
+	destination.aspect = WGPUTextureAspect_All; // Only relevant to depth/stencil textures
+
+	WGPUTextureDataLayout source;
+	source.nextInChain = nullptr;
+	source.offset = 0;
+	source.bytesPerRow = 4 * textureSize.width;
+	source.rowsPerImage = textureSize.height;
+
+	WGPUQueue queue = wgpuDeviceGetQueue(device);
+	wgpuQueueWriteTexture(queue, &destination, pixelData, 4 * textureSize.width * textureSize.height, &source, &textureSize);
+	wgpuQueueRelease(queue);
+}
+
+WGPUTexture ResourceManager::LoadTexture(const std::filesystem::path& path, WGPUDevice device, WGPUTextureView* pTextureView)
+{
+	int width, height, channels;
+	std::string pathName = path.string();
+	unsigned char* pixelData = stbi_load(pathName.c_str(), &width, &height, &channels, 4); // Force 4 channels
+	if (pixelData == nullptr) {
+		SPDLOG_ERROR("Failed to load texture \"{}\"", pathName);
+		exit(1);
+	}
+
+	WGPUTextureDescriptor textureDesc = {};
+	textureDesc.nextInChain = nullptr;
+	textureDesc.label = "My loaded texture";
+	textureDesc.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+	textureDesc.dimension = WGPUTextureDimension_2D;
+	textureDesc.size = {(unsigned int)width, (unsigned int)height, 1};
+	textureDesc.format = WGPUTextureFormat_RGBA8Unorm;
+	textureDesc.mipLevelCount = 1; // 8 mip maps
+	textureDesc.sampleCount = 1;
+	textureDesc.viewFormatCount = 0;
+	textureDesc.viewFormats = nullptr;
+	WGPUTexture texture = wgpuDeviceCreateTexture(device, &textureDesc);
+	
+	// Upload data to the GPU texture
+	writeMipMaps(device, texture, textureDesc.size, textureDesc.mipLevelCount, pixelData);
+
+	stbi_image_free(pixelData);
+
+	// Write to the texture view of the sampler
+	if (pTextureView) {
+		WGPUTextureViewDescriptor textureViewDesc = {};
+		textureViewDesc.nextInChain = nullptr;
+		textureViewDesc.label = "My generated texture view";
+		textureViewDesc.format = textureDesc.format;
+		textureViewDesc.dimension = WGPUTextureViewDimension_2D;
+		textureViewDesc.baseMipLevel = 0;
+		textureViewDesc.mipLevelCount = textureDesc.mipLevelCount;
+		textureViewDesc.baseArrayLayer = 0;
+		textureViewDesc.arrayLayerCount = 1;
+		textureViewDesc.aspect = WGPUTextureAspect_All;
+		*pTextureView = wgpuTextureCreateView(texture, &textureViewDesc);
+	}
+
+	return texture;
 }
 
 WGPUShaderModule ResourceManager::LoadShaderModule(const std::filesystem::path& path, WGPUDevice device)

@@ -26,6 +26,7 @@ struct VertexAttributes
 	glm::vec3 position;
 	glm::vec3 normal;
 	glm::vec3 color;
+	glm::vec2 uv;
 };
 
 class Application
@@ -48,8 +49,10 @@ private:
 	WGPUPipelineLayout m_layout = nullptr;
 	WGPUBindGroup m_bindGroup = nullptr;
 	WGPUBindGroupLayout m_bindGroupLayout = nullptr;
-	WGPUTexture m_depthTexture = nullptr;
-	WGPUTextureView m_depthTextureView = nullptr;
+	WGPUTexture m_texture = nullptr, m_depthTexture = nullptr;
+	WGPUTextureView m_textureView = nullptr, m_depthTextureView = nullptr;
+	WGPUTextureFormat m_depthTextureFormat = WGPUTextureFormat_Undefined;
+	WGPUSampler m_sampler = nullptr;
 
 	bool m_gpuIdle = false;
 	// uint32_t m_vertexCount = 0;
@@ -69,8 +72,9 @@ private:
 	void setDefault(WGPUDepthStencilState& depthStencilState) const;
 	void displayAdapterInfo(WGPUAdapter adapter);
 	void inspectDevice(WGPUDevice device);
+	
+	void initializeBuffers();
 	void initializePipeline();
-	void intializeBuffers();
 	void initializeBindGroups();
 	void calculateUniforms();
 };
