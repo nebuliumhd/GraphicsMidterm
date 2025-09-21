@@ -45,15 +45,10 @@ if (XCODE)
 endif()
 
 # Compile Dawn then add it as a dependency
-set(DAWN_ENABLE_D3D12 OFF CACHE BOOL "Disable DX12 backend" FORCE)
-set(DAWN_ENABLE_METAL OFF CACHE BOOL "Disable Metal backend" FORCE)
-set(DAWN_ENABLE_OPENGL OFF CACHE BOOL "Disable OpenGL backend" FORCE)
-set(DAWN_ENABLE_WGPU OFF CACHE BOOL "Disable WebGPU backend" FORCE)
-set(DAWN_ENABLE_VULKAN ON CACHE BOOL "Enable Vulkan backend" FORCE)
-set(Dawn_USE_INTERNAL_GLFW OFF CACHE BOOL "Disable internal GLFW" FORCE)
 add_subdirectory(vendor/dawn)
 add_subdirectory(vendor/glfw3webgpu)
 add_subdirectory(vendor/spdlog)
+add_subdirectory(vendor/glm)
 
 target_include_directories(App
     PRIVATE
@@ -66,6 +61,7 @@ target_link_libraries(App
         glfw3webgpu
         webgpu
         spdlog
+        glm
 )
 
 target_copy_webgpu_binaries(App)

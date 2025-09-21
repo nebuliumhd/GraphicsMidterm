@@ -6,6 +6,13 @@
 #include <array>
 #include <thread>
 
+// Z is (0, 1) and not OpenGL's (-1, 1)
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+// Left-handed coordinate system
+#define GLM_FORCE_LEFT_HANDED
+#include <glm/ext.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
 #include <spdlog/spdlog.h>
 #include <glfw3webgpu.h>
 #include "Main.hpp"
@@ -98,16 +105,16 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 
 	// Vertex buffers
 
-	// Two vertex attributes (position and color)
-	requiredLimits.limits.maxVertexAttributes = 2;
+	// Three vertex attributes (position, normal, and color)
+	requiredLimits.limits.maxVertexAttributes = 3;
 	// One vertex buffer
 	requiredLimits.limits.maxVertexBuffers = 1;
-	// A max of three floats forwarded from the vertex to the fragment shader
-	requiredLimits.limits.maxInterStageShaderComponents = 3;
-	// Minimum required buffer size needed (5 individual floats for each vertex of a triangle for two triangles)
-	requiredLimits.limits.maxBufferSize = 2 * 3 * 5 * sizeof(float);
+	// In otherwords, how many individual attributes can be passed from the vertex to fragment shader (x, y, z) and (nx, ny, nz)
+	requiredLimits.limits.maxInterStageShaderComponents = 6;
+	// Minimum required buffer size needed (10k vertices allowed for meshes)
+	requiredLimits.limits.maxBufferSize = 10000 * sizeof(VertexAttributes);
 	// Maximum stride between consecutive vertices in a vertex buffer
-	requiredLimits.limits.maxVertexBufferArrayStride = 5 * sizeof(float);
+	requiredLimits.limits.maxVertexBufferArrayStride = sizeof(VertexAttributes); // For X, Y, Z, R, G, B
 
 	// Uniforms
 
@@ -116,9 +123,15 @@ WGPURequiredLimits Application::getRequiredLimits(WGPUAdapter adapter) const
 	// Use at most 1 uniform buffer per stage
 	requiredLimits.limits.maxUniformBuffersPerShaderStage = 1;
 	// Uniform structs have a size of a maximum 16 floats (way more than needed)
-	requiredLimits.limits.maxUniformBufferBindingSize = 16 * sizeof(float);
+	requiredLimits.limits.maxUniformBufferBindingSize = 16 * 4 * sizeof(float);
 	// Extra limit requirement
 	requiredLimits.limits.maxDynamicUniformBuffersPerPipelineLayout = 1;
+
+	// Textures / Depth buffer
+
+	requiredLimits.limits.maxTextureDimension1D = 1920;
+	requiredLimits.limits.maxTextureDimension2D = 1080;
+	requiredLimits.limits.maxTextureArrayLayers = 1;
 
 	// IMPORTANT!!! MUST SET THESE TO AN INITIALIZED VALUE
 
@@ -189,6 +202,29 @@ void Application::setDefault(WGPUBindGroupLayoutEntry& bindingLayout) const
 	bindingLayout.storageTexture.access = WGPUStorageTextureAccess_Undefined;
 	bindingLayout.storageTexture.format = WGPUTextureFormat_Undefined;
 	bindingLayout.storageTexture.viewDimension = WGPUTextureViewDimension_Undefined;
+}
+
+void Application::setDefault(WGPUStencilFaceState& stencilFaceState) const
+{
+	stencilFaceState.compare = WGPUCompareFunction_Always;
+	stencilFaceState.failOp = WGPUStencilOperation_Keep;
+	stencilFaceState.depthFailOp = WGPUStencilOperation_Keep;
+	stencilFaceState.passOp = WGPUStencilOperation_Keep;
+}
+
+void Application::setDefault(WGPUDepthStencilState& depthStencilState) const
+{
+	depthStencilState.nextInChain = nullptr;
+	depthStencilState.format = WGPUTextureFormat_Undefined;
+	depthStencilState.depthWriteEnabled = false;
+	depthStencilState.depthCompare = WGPUCompareFunction_Always;
+	setDefault(depthStencilState.stencilFront);
+	setDefault(depthStencilState.stencilBack);
+	depthStencilState.stencilReadMask = 0xFFFFFFFF;
+	depthStencilState.stencilWriteMask = 0xFFFFFFFF;
+	depthStencilState.depthBias = 0;
+	depthStencilState.depthBiasSlopeScale = 0;
+	depthStencilState.depthBiasClamp = 0;
 }
 
 void Application::displayAdapterInfo(WGPUAdapter adapter)
@@ -521,19 +557,26 @@ void Application::initializePipeline()
 	pipelineDesc.layout = m_layout;
 
 	// Vertex buffer
-	std::vector<WGPUVertexAttribute> vertexAttrib(2);
-	vertexAttrib[0].format = WGPUVertexFormat_Float32x2; // 2 32-bit floats for X, Y
-	vertexAttrib[0].offset = 0;
-	vertexAttrib[0].shaderLocation = 0; // @location(0)
-	vertexAttrib[1].format = WGPUVertexFormat_Float32x3;
-	vertexAttrib[1].offset = 2 * sizeof(float); // Starts 2 
-	vertexAttrib[1].shaderLocation = 1; // @location(1)
+
+	// Position attribute
+	std::vector<WGPUVertexAttribute> vertexAttribs(3);
+	vertexAttribs[0].format = WGPUVertexFormat_Float32x3; // 3 32-bit floats for X, Y, (Z)
+	vertexAttribs[0].offset = offsetof(VertexAttributes, position);
+	vertexAttribs[0].shaderLocation = 0; // @location(0)
+	// Normal attribute
+	vertexAttribs[1].format = WGPUVertexFormat_Float32x3;
+	vertexAttribs[1].offset = offsetof(VertexAttributes, normal);
+	vertexAttribs[1].shaderLocation = 1; // @location(1)
+	// Color attribute
+	vertexAttribs[2].format = WGPUVertexFormat_Float32x3;
+	vertexAttribs[2].offset = offsetof(VertexAttributes, color);
+	vertexAttribs[2].shaderLocation = 2; // @location(2)
 
 	WGPUVertexBufferLayout vertexBufferLayout = {};
-	vertexBufferLayout.arrayStride = 5 * sizeof(float); // Five attributes: (X, Y) and (R, G, B)
+	vertexBufferLayout.arrayStride = sizeof(VertexAttributes); // 9 attributes: (X, Y, Z), (NX, NY, NZ), and (R, G, B)
 	vertexBufferLayout.stepMode = WGPUVertexStepMode_Vertex;
-	vertexBufferLayout.attributeCount = static_cast<uint32_t>(vertexAttrib.size());
-	vertexBufferLayout.attributes = vertexAttrib.data();
+	vertexBufferLayout.attributeCount = static_cast<uint32_t>(vertexAttribs.size());
+	vertexBufferLayout.attributes = vertexAttribs.data();
 
 	pipelineDesc.vertex.nextInChain = nullptr;
 	pipelineDesc.vertex.module = shaderModule;
@@ -551,7 +594,46 @@ void Application::initializePipeline()
 	pipelineDesc.primitive.cullMode = WGPUCullMode_None; // No optimizations yet
 
 	// Depth stencil (ASSUMED DEFAULTS)
-	pipelineDesc.depthStencil = nullptr;
+
+	// 1. Create stencil state
+	WGPUDepthStencilState depthStencilState = {};
+	setDefault(depthStencilState);
+	WGPUTextureFormat depthTextureFormat = WGPUTextureFormat_Depth24Plus;
+	depthStencilState.format = depthTextureFormat;
+	depthStencilState.depthWriteEnabled = true;
+	depthStencilState.depthCompare = WGPUCompareFunction_Less; // Blend if current depth value is less than the one stored in the Z-Buffer
+	depthStencilState.stencilReadMask = 0;
+	depthStencilState.stencilWriteMask = 0;
+
+	// 2. Create the depth texture
+	WGPUTextureDescriptor depthTextureDesc = {};
+	depthTextureDesc.nextInChain = nullptr;
+	depthTextureDesc.label = "My main depth texture";
+	depthTextureDesc.usage = WGPUTextureUsage_RenderAttachment;
+	depthTextureDesc.dimension = WGPUTextureDimension_2D;
+	depthTextureDesc.size = {1920, 1080, 1};
+	depthTextureDesc.format = depthTextureFormat;
+	depthTextureDesc.mipLevelCount = 1;
+	depthTextureDesc.sampleCount = 1;
+	depthTextureDesc.viewFormatCount = 1;
+	depthTextureDesc.viewFormats = &depthTextureFormat;
+	m_depthTexture = wgpuDeviceCreateTexture(m_device, &depthTextureDesc);
+
+	// 3. Create a texture view
+	WGPUTextureViewDescriptor depthTextureViewDesc = {};
+	depthTextureViewDesc.nextInChain = nullptr;
+	depthTextureViewDesc.label = "My main depth texture view";
+	depthTextureViewDesc.format = depthTextureFormat;
+	depthTextureViewDesc.dimension = WGPUTextureViewDimension_2D;
+	depthTextureViewDesc.baseMipLevel = 0;
+	depthTextureViewDesc.mipLevelCount = 1;
+	depthTextureViewDesc.baseArrayLayer = 0;
+	depthTextureViewDesc.arrayLayerCount = 1;
+	depthTextureViewDesc.aspect = WGPUTextureAspect_DepthOnly;
+	m_depthTextureView = wgpuTextureCreateView(m_depthTexture, &depthTextureViewDesc);
+	
+	// 4. Insert into pipeline
+	pipelineDesc.depthStencil = &depthStencilState;
 
 	// Multisampling
 	pipelineDesc.multisample.nextInChain = nullptr;
@@ -607,7 +689,7 @@ void Application::intializeBuffers()
 {
 	std::vector<float> pointData;
 	std::vector<uint16_t> indexData;
-	bool success = ResourceManager::LoadGeometry(RESOURCE_DIR "webgpu.txt", pointData, indexData);
+	bool success = ResourceManager::LoadGeometryFromObj(RESOURCE_DIR "pyramid.obj", m_vertexData);
 	if (!success) {
 		SPDLOG_ERROR("Could not load geometry!");
 		exit(1);
@@ -615,26 +697,28 @@ void Application::intializeBuffers()
 
 	// Not needed?
 	// m_vertexCount = static_cast<uint32_t>(pointData.size() / 5); // 5 is the number of COLLECTIVE vertex attributes
-	m_indexCount = static_cast<uint32_t>(indexData.size());
+	
 
 	// Vertex buffer
 	WGPUBufferDescriptor bufferDesc = {};
 	bufferDesc.nextInChain = nullptr;
 	bufferDesc.label = "My main vertex buffer";
 	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Vertex; // Can only copy TO and not FROM
-	bufferDesc.size = pointData.size() * sizeof(float); // MAKE SURE THAT WE DON'T REQUEST SIZE (buffer) > MAXBUFFERSIZE (device)
+	bufferDesc.size = m_vertexData.size() * sizeof(VertexAttributes); // MAKE SURE THAT WE DON'T REQUEST SIZE (buffer) > MAXBUFFERSIZE (device)
 	bufferDesc.mappedAtCreation = false;
-	m_pointBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
-	wgpuQueueWriteBuffer(m_queue, m_pointBuffer, 0, pointData.data(), bufferDesc.size);
+	m_vertexBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
+	wgpuQueueWriteBuffer(m_queue, m_vertexBuffer, 0, m_vertexData.data(), bufferDesc.size);
+
+	m_indexCount = static_cast<uint32_t>(m_vertexData.size());
 
 	// Index buffer
-	bufferDesc.label = "My main index buffer";
-	bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Index;
-	bufferDesc.size = indexData.size() * sizeof(uint16_t);
-	bufferDesc.size = (bufferDesc.size + 3) & ~3; // Round up to the next multiple of 4 (REQUIRED BY WEBGPU)
-	indexData.resize((indexData.size() + 1) & ~1); // Round up to the next multiple of 2
-	m_indexBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
-	wgpuQueueWriteBuffer(m_queue, m_indexBuffer, 0, indexData.data(), bufferDesc.size);
+	// bufferDesc.label = "My main index buffer";
+	// bufferDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_Index;
+	// bufferDesc.size = indexData.size() * sizeof(uint16_t);
+	// bufferDesc.size = (bufferDesc.size + 3) & ~3; // Round up to the next multiple of 4 (REQUIRED BY WEBGPU)
+	// indexData.resize((indexData.size() + 1) & ~1); // Round up to the next multiple of 2
+	// m_indexBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
+	// wgpuQueueWriteBuffer(m_queue, m_indexBuffer, 0, indexData.data(), bufferDesc.size);
 
 	// Uniform buffer
 	bufferDesc.label = "My main uniform buffer";
@@ -642,17 +726,55 @@ void Application::intializeBuffers()
 	bufferDesc.size = m_uniformStride + sizeof(MyUniforms); // IMPORTANT! MAKE SURE WE ARE USING MULTIPLES OF 16
 	m_uniformBuffer = wgpuDeviceCreateBuffer(m_device, &bufferDesc);
 
-	MyUniforms uniforms;
+	calculateUniforms();
 
-	// Upload first value
-	uniforms.color = {0.0f, 1.0f, 0.4f, 1.0f};
-	uniforms.time = 1.0f;
-	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0, &uniforms, sizeof(MyUniforms));
+	//// Upload first value
+	//m_uniforms.color = {0.0f, 1.0f, 0.4f, 1.0f};
+	//m_uniforms.time = 1.0f;
+	//wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, offsetof(), &m_uniforms, sizeof(MyUniforms));
 
-	// Second value
-	uniforms.color = {1.0f, 1.0f, 1.0f, 0.7f};
-	uniforms.time = -1.0f;
-	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, m_uniformStride, &uniforms, sizeof(MyUniforms));
+	//// Second value
+	//m_uniforms.color = {1.0f, 1.0f, 1.0f, 0.7f};
+	//m_uniforms.time = -1.0f;
+	//wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, m_uniformStride, &m_uniforms, sizeof(MyUniforms));
+}
+
+void Application::calculateUniforms()
+{
+	constexpr float PI = 3.14159265358979323846f;
+
+	// Model transformation matrix
+
+	float angle1 = (float)glfwGetTime();
+	float angle2 = 3.0 * PI / 4.0;
+
+	glm::mat4x4 S = glm::scale(glm::mat4x4(1.0), glm::vec3(0.3f));
+	glm::mat4x4 T1 = glm::translate(glm::mat4x4(1.0), glm::vec3(0.5, 0.0, 0.0));
+	glm::mat4x4 R1 = glm::rotate(glm::mat4x4(1.0), angle1, glm::vec3(0.0, 0.0, 1.0));
+	m_uniforms.modelMatrix = R1 * T1 * S;
+
+	glm::vec3 focalPoint = glm::vec3(0.0, 0.0, -2.0);
+	float focalLength = 2.0f;
+	glm::mat4x4 R2 = glm::rotate(glm::mat4x4(1.0), -angle2, glm::vec3(1.0, 0.0, 0.0));
+	glm::mat4x4 T2 = glm::translate(glm::mat4x4(1.0), -focalPoint);
+	m_uniforms.viewMatrix = T2 * R2;
+
+	float near = 0.001f;
+	float far = 100.0f;
+	float ratio = 1920.0f / 1080.0f;
+	float fov = 2 * glm::atan(1 / focalLength);
+	m_uniforms.projectionMatrix = glm::perspective(fov, ratio, near, far);
+
+
+	// Other uniforms
+	m_uniforms.color = {0.0f, 1.0f, 0.4f, 1.0f};
+	m_uniforms.time = 1.0f;
+
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, projectionMatrix), &m_uniforms.projectionMatrix, sizeof(MyUniforms::projectionMatrix));
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, viewMatrix), &m_uniforms.viewMatrix, sizeof(MyUniforms::viewMatrix));
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, modelMatrix), &m_uniforms.modelMatrix, sizeof(MyUniforms::modelMatrix));
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, color), &m_uniforms.color, sizeof(MyUniforms::color));
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, time), &m_uniforms.time, sizeof(MyUniforms::time));
 }
 
 void Application::MainLoop()
@@ -662,8 +784,14 @@ void Application::MainLoop()
 	wgpuDeviceTick(m_device);
 
 	// 0. Update buffers (only upload time to MyUniforms, which is the first 4 bytes)
+	// TODO: Optimize
 	float t = static_cast<float>(glfwGetTime());
-	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, time), &t, sizeof(float));
+	glm::mat4x4 S = glm::scale(glm::mat4x4(1.0), glm::vec3(0.3f));
+	glm::mat4x4 T1 = glm::translate(glm::mat4x4(1.0), glm::vec3(0.5, 0.0, 0.0));
+	glm::mat4x4 R1 = glm::rotate(glm::mat4x4(1.0), t, glm::vec3(0.0, 0.0, 1.0));
+	m_uniforms.modelMatrix = R1 * T1 * S;
+	m_uniforms.time = t;
+	wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 0 * m_uniformStride + offsetof(MyUniforms, modelMatrix), &m_uniforms.modelMatrix, sizeof(MyUniforms::modelMatrix));
 	// wgpuQueueWriteBuffer(m_queue, m_uniformBuffer, 1 * m_uniformStride + offsetof(MyUniforms, time), &t, sizeof(float));
 
 	// 1. Get textures from our surface
@@ -678,14 +806,26 @@ void Application::MainLoop()
 	colorAtt.resolveTarget = nullptr;
 	colorAtt.loadOp = WGPULoadOp_Clear;
 	colorAtt.storeOp = WGPUStoreOp_Store;
-	colorAtt.clearValue = WGPUColor{0.0, 0.0, 0.0, 1.0};
+	colorAtt.clearValue = WGPUColor{0.5, 0.5, 0.5, 1.0};
+
+	WGPURenderPassDepthStencilAttachment depthStencilAtt = {};
+	depthStencilAtt.view = m_depthTextureView;
+	depthStencilAtt.depthLoadOp = WGPULoadOp_Clear;
+	depthStencilAtt.depthStoreOp = WGPUStoreOp_Store;
+	depthStencilAtt.depthClearValue = 1.0f; // The back plane of the Z-Buffer
+	depthStencilAtt.depthReadOnly = false;
+	// Not used at the moment (IMPORTANT!!!!!!!!!!!!!!!!!! DAWN NEEDS TO HAVE THE STENCIL UNDEFINED IF WE DON'T USE IT)
+	depthStencilAtt.stencilLoadOp = WGPULoadOp_Undefined;
+	depthStencilAtt.stencilStoreOp = WGPUStoreOp_Undefined;
+	depthStencilAtt.stencilClearValue = 0;
+	depthStencilAtt.stencilReadOnly = true;
 
 	WGPURenderPassDescriptor renderPassDesc = {};
 	renderPassDesc.nextInChain = nullptr;
 	renderPassDesc.label = "Main render pass";
 	renderPassDesc.colorAttachmentCount = 1;
 	renderPassDesc.colorAttachments = &colorAtt;
-	renderPassDesc.depthStencilAttachment = nullptr;
+	renderPassDesc.depthStencilAttachment = &depthStencilAtt;
 	renderPassDesc.occlusionQuerySet = nullptr;
 	renderPassDesc.timestampWrites = nullptr;
 	
@@ -700,17 +840,19 @@ void Application::MainLoop()
 	wgpuRenderPassEncoderSetPipeline(renderPassEncoder, m_pipeline);
 
 	// Set vertex buffer while encoding the render pass
-	wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder, 0, m_pointBuffer, 0, wgpuBufferGetSize(m_pointBuffer));
-	wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder, m_indexBuffer, WGPUIndexFormat_Uint16, 0, wgpuBufferGetSize(m_indexBuffer));
+	wgpuRenderPassEncoderSetVertexBuffer(renderPassEncoder, 0, m_vertexBuffer, 0, m_vertexData.size() * sizeof(VertexAttributes));
+	// wgpuRenderPassEncoderSetIndexBuffer(renderPassEncoder, m_indexBuffer, WGPUIndexFormat_Uint16, 0, wgpuBufferGetSize(m_indexBuffer));
 
 	// Set binding group here!
 	uint32_t dynamicOffset = 0 * m_uniformStride;
 	wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 1, &dynamicOffset);
-	wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
+	// wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
+	wgpuRenderPassEncoderDraw(renderPassEncoder, m_indexCount, 1, 0, 0);
 	
-	dynamicOffset = 1 * m_uniformStride;
-	wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 1, &dynamicOffset);
-	wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
+	// Leave out for now
+	// dynamicOffset = 1 * m_uniformStride;
+	// wgpuRenderPassEncoderSetBindGroup(renderPassEncoder, 0, m_bindGroup, 1, &dynamicOffset);
+	// wgpuRenderPassEncoderDrawIndexed(renderPassEncoder, m_indexCount, 1, 0, 0, 0);
 
 	wgpuRenderPassEncoderEnd(renderPassEncoder);
 	wgpuRenderPassEncoderRelease(renderPassEncoder);
@@ -776,8 +918,13 @@ void Application::Terminate()
 	wgpuBindGroupLayoutRelease(m_bindGroupLayout);
 
 	wgpuBufferRelease(m_uniformBuffer);
-	wgpuBufferRelease(m_pointBuffer);
-	wgpuBufferRelease(m_indexBuffer);
+	// wgpuBufferRelease(m_indexBuffer);
+	wgpuBufferRelease(m_vertexBuffer);
+
+	// Check if we can release stuff here?
+	wgpuTextureViewRelease(m_depthTextureView);
+	wgpuTextureDestroy(m_depthTexture);
+	wgpuTextureRelease(m_depthTexture);
 
 	wgpuSurfaceUnconfigure(m_surface);
 	wgpuSurfaceRelease(m_surface);

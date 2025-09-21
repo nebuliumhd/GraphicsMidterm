@@ -2,13 +2,17 @@
 #include <sstream>
 #include <string>
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tinyobjloader/tiny_obj_loader.h"
+
 #include <spdlog/spdlog.h>
 #include "ResourceManager.hpp"
 
-bool ResourceManager::LoadGeometry(const std::filesystem::path& path, std::vector<float>& pointData, std::vector<uint16_t>& indexData)
+bool ResourceManager::LoadGeometry(const std::filesystem::path& path, std::vector<float>& pointData, std::vector<uint16_t>& indexData, int dimensions)
 {
 	std::ifstream file(path);
 	if (!file.is_open()) {
+		SPDLOG_ERROR("Could not load geometry!");
 		return false;
 	}
 
@@ -42,18 +46,72 @@ bool ResourceManager::LoadGeometry(const std::filesystem::path& path, std::vecto
 			// Do nothing yet
 		} else if (currentSection == Section::Points) {
 			std::istringstream iss(line);
-			// Get x, y, r, g, b
-			for (int i = 0; i < 5; ++i) {
+			// Get x, y, (z), r, g, b
+			for (int i = 0; i < dimensions + 3; ++i) {
 				iss >> value;
 				pointData.push_back(value);
 			}
 		} else if (currentSection == Section::Indices) {
 			std::istringstream iss(line);
-			// Get x, y, r, g, b
+			// Get corners 0, 1, 2
 			for (int i = 0; i < 3; ++i) {
 				iss >> value;
 				indexData.push_back(value);
 			}
+		}
+	}
+
+	return true;
+}
+
+bool ResourceManager::LoadGeometryFromObj(const std::filesystem::path& path, std::vector<VertexAttributes>& vertexData)
+{
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> materials;
+
+	std::string warn;
+	std::string err;
+
+	bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.string().c_str());
+	if (!warn.empty()) {
+		SPDLOG_WARN("{}", warn);
+	}
+	if (!err.empty()) {
+		SPDLOG_ERROR("{}", err);
+	}
+	if (!ret) {
+		return false;
+	}
+
+	// Filling in vertexData:
+	vertexData.clear();
+	for (const auto& shape : shapes) {
+		size_t offset = vertexData.size();
+		vertexData.resize(offset + shape.mesh.indices.size());
+
+		for (size_t i = 0; i < shape.mesh.indices.size(); ++i) {
+			const tinyobj::index_t& idx = shape.mesh.indices[i];
+
+			// Avoid mirroring by adding a minus
+			vertexData[offset + i].position = {
+				attrib.vertices[3 * idx.vertex_index + 0],
+				-attrib.vertices[3 * idx.vertex_index + 2], 
+				attrib.vertices[3 * idx.vertex_index + 1]
+			};
+
+			// Also apply the transform to normals!!
+			vertexData[offset + i].normal = {
+				attrib.normals[3 * idx.normal_index + 0],
+				-attrib.normals[3 * idx.normal_index + 2],
+				attrib.normals[3 * idx.normal_index + 1]
+			};
+
+			vertexData[offset + i].color = {
+				attrib.colors[3 * idx.vertex_index + 0],
+				attrib.colors[3 * idx.vertex_index + 1],
+				attrib.colors[3 * idx.vertex_index + 2]
+			};
 		}
 	}
 
