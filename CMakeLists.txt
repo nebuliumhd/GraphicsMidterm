@@ -5,6 +5,19 @@ project(
     LANGUAGES CXX C # programming languages used by the project
 )
 
+set(CMAKE_BUILD_TYPE Release)
+
+# PhysX Configuration
+set(PHYSX_DIR "${CMAKE_SOURCE_DIR}/vendor/physx")
+set(PHYSX_BUILD_TYPE "checked" CACHE STRING "The build type of PhysX")
+set_property(CACHE PHYSX_BUILD_TYPE PROPERTY STRINGS debug checked profile release)
+
+# PhysX build options - disable unnecessary components
+
+# Build early for now
+include_directories(vendor/physx/physx/include)
+link_directories("vendor/physx/physx/bin/win.x86_64.vc143.md/${PHYSX_BUILD_TYPE}")
+
 # Application
 set(APP_INC ${CMAKE_SOURCE_DIR}/src)
 file(GLOB_RECURSE APP_SRC ${CMAKE_SOURCE_DIR}/src/*.cpp)
@@ -49,19 +62,52 @@ add_subdirectory(vendor/dawn)
 add_subdirectory(vendor/glfw3webgpu)
 add_subdirectory(vendor/spdlog)
 add_subdirectory(vendor/glm)
+add_subdirectory(vendor/imgui)
 
 target_include_directories(App
     PRIVATE
         ${APP_INC}
+        ${PHYSX_DIR}/physx/include
 )
 
-target_link_libraries(App
-    PRIVATE
-        glfw
-        glfw3webgpu
-        webgpu
-        spdlog
-        glm
-)
+# Link libraries - PhysX libraries need specific ordering
+if(UNIX AND NOT APPLE)
+    # Linux linking with proper grouping
+    target_link_libraries(App
+        PRIVATE
+            glfw3webgpu
+            webgpu
+            glm
+            glfw
+            imgui
+            spdlog
+            -Wl,--start-group
+            PhysXExtensions_static_64
+            PhysX_static_64
+            PhysXPvdSDK_static_64
+            PhysXCommon_static_64
+            PhysXFoundation_static_64
+            -Wl,--end-group
+
+            pthread
+            dl
+    )
+else()
+    # Windows/Mac linking
+    target_link_libraries(App
+        PRIVATE
+            glfw3webgpu
+            webgpu
+            glm
+            glfw
+            imgui
+            spdlog
+            PhysXExtensions_static_64
+            PhysX_64
+            PhysXPvdSDK_static_64
+            PhysXCommon_64
+            PhysXFoundation_64
+    )
+endif()
 
 target_copy_webgpu_binaries(App)

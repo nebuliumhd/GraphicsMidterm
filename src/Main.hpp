@@ -21,12 +21,41 @@ struct MyUniforms // Total size of the struct has to be a multiple of the alignm
 };
 static_assert(sizeof(MyUniforms) % 16 == 0);
 
+struct LightingUniforms
+{
+	std::array<glm::vec4, 2> directions;
+	std::array<glm::vec4, 2> colors;
+};
+static_assert(sizeof(LightingUniforms) % 16 == 0);
+
 struct VertexAttributes
 {
 	glm::vec3 position;
 	glm::vec3 normal;
 	glm::vec3 color;
 	glm::vec2 uv;
+};
+
+struct CameraState
+{
+	// Rotation around the global vertical axis and local horizontal axis respectively (xmouse, ymouse)
+	glm::vec2 angles = {0.8f, 0.5f};
+	// Position of camera along its local forward axis (scroll wheel)
+	float zoom = -1.2f;
+};
+
+struct DragState
+{
+	bool active = false; // On-going drag
+	glm::vec2 startMouse; // Mouse at the start of the drag
+	CameraState startCameraState; // Camera at the start of the drag
+
+	float sensitivity = 0.01f;
+	float scrollSensitivity = 0.1f;
+
+	glm::vec2 velocity = {0.0f, 0.0f};
+	glm::vec2 previousDelta;
+	float inertia = 0.9f;
 };
 
 class Application
@@ -36,6 +65,8 @@ public:
 	void Terminate();
 	void MainLoop();
 	bool IsRunning();
+
+	void onResize();
 private:
 	GLFWwindow* m_glfwWindow = nullptr;
 	WGPUInstance m_instance = nullptr;
@@ -46,7 +77,7 @@ private:
 	WGPUSwapChain m_swapChain = nullptr;
 	WGPUTextureFormat m_swapChainFormat = WGPUTextureFormat_Undefined;
 	WGPURenderPipeline m_pipeline = nullptr;
-	WGPUBuffer m_vertexBuffer = nullptr, m_indexBuffer = nullptr, m_uniformBuffer = nullptr;
+	WGPUBuffer m_vertexBuffer = nullptr, m_indexBuffer = nullptr, m_uniformBuffer = nullptr, m_lightingUniformBuffer = nullptr;
 	WGPUPipelineLayout m_layout = nullptr;
 	WGPUBindGroup m_bindGroup = nullptr;
 	WGPUBindGroupLayout m_bindGroupLayout = nullptr;
@@ -60,6 +91,8 @@ private:
 	std::vector<VertexAttributes> m_vertexData;
 	uint32_t m_vertexCount = 0;
 	MyUniforms m_uniforms;
+	LightingUniforms m_lightingUniforms;
+	bool m_lightingUniformsChanged = true;
 	uint32_t m_uniformStride = 0;
 
 	uint32_t ceilToNextMultiple(uint32_t value, uint32_t step);
@@ -81,6 +114,24 @@ private:
 	bool initTexture();
 	bool initGeometry();
 	bool initUniforms();
+	bool initLightingUniforms();
+	bool initBindGroupLayout();
 	bool initRenderPipeline();
 	bool initBindGroup();
+
+	void updateProjectionMatrix();
+	void updateViewMatrix();
+	void updateLightingUniforms();
+
+	// Input
+	CameraState m_cameraState;
+	DragState m_dragState;
+	void updateDragInertia();
+	void onMouseMove(double xpos, double ypos);
+	void onMouseButton(int button, int action, int mods);
+	void onScroll(double xoffset, double yoffset);
+
+	// Dear ImGui
+	bool initDearImGui();
+	void updateDearImGui(WGPURenderPassEncoder renderPassEncoder);
 };

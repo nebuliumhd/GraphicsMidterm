@@ -9,10 +9,16 @@ struct MyUniforms { // Total size of the struct has to be a multiple of the alig
 	time: f32,
 };
 
+struct LightingUniforms {
+	directions: array<vec4f, 2>,
+	colors: array<vec4f, 2>,
+}
+
 const pi = 3.14159265359;
 @group(0) @binding(0) var<uniform> u_myUniforms: MyUniforms;
-@group(0) @binding(1) var u_gradientTexture: texture_2d<f32>;
+@group(0) @binding(1) var u_baseColorTexture: texture_2d<f32>;
 @group(0) @binding(2) var u_textureSampler: sampler;
+@group(0) @binding(3) var<uniform> u_lighting: LightingUniforms;
 
 // The struct passed to the vertex assembler stage
 struct VertexInput {
@@ -29,25 +35,6 @@ struct VertexOutput {
 	@location(1) normal: vec3f,
 	@location(2) uv: vec2f,
 };
-
-fn makeOrthographicProj(ratio: f32, near: f32, far: f32, scale: f32) -> mat4x4f {
-	return transpose(mat4x4f(
-		1.0 / scale,      0.0,           0.0,                  0.0,
-		    0.0,     ratio / scale,      0.0,                  0.0,
-		    0.0,          0.0,      1.0 / (far - near), -near / (far - near),
-		    0.0,          0.0,           0.0,                  1.0,
-	));
-}
-
-fn makePerspectiveProj(ratio: f32, near: f32, far: f32, focalLength: f32) -> mat4x4f {
-	let divides = 1.0 / (far - near);
-	return transpose(mat4x4f(
-		focalLength,         0.0,              0.0,               0.0,
-		    0.0,     focalLength * ratio,      0.0,               0.0,
-		    0.0,             0.0,         far * divides, -far * near * divides,
-		    0.0,             0.0,              1.0,               0.0,
-	));
-}
 
 @vertex
 fn vs_main(v_in: VertexInput) -> VertexOutput {
@@ -68,17 +55,17 @@ fn vs_main(v_in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(f_in: VertexOutput) -> @location(0) vec4f {
-	// let normal = normalize(f_in.normal);
-	// let lightColor1 = vec3f(1.0, 0.9, 0.6);
-	// let lightColor2 = vec3f(0.6, 0.9, 1.0);
-	// let lightDirection1 = vec3f(0.5, -0.9, 0.1);
-	// let lightDirection2 = vec3f(0.2, 0.4, 0.3);
-	// let shading1 = max(0.0, dot(lightDirection1, normal));
-	// let shading2 = max(0.0, dot(lightDirection2, normal));
-	// let shading = shading1 * lightColor1 + shading2 * lightColor2;
-	// let color = normal * shading;
+	let normal = normalize(f_in.normal);
+	var shading = vec3f(0.0);
+	for (var i: i32 = 0; i < 2; i++) {
+		let direction = normalize(u_lighting.directions[i].xyz);
+		let color = u_lighting.colors[i].rgb;
+		shading += max(0.0, dot(direction, normal)) * color;
+	}
 
-	let color = textureSample(u_gradientTexture, u_textureSampler, f_in.uv).rgb;
+	// Sample texture
+	let baseColor = textureSample(u_baseColorTexture, u_textureSampler, f_in.uv).rgb;
+	let color = baseColor * shading;
 
 	// Gamma correction (Not needed)
 	// let linear_color = pow(color, vec3f(2.2));
